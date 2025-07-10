@@ -1,7 +1,7 @@
 import re
 import math
 import datetime
-from zoneinfo import ZoneInfo  # ✅ Added for IST
+import pytz
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import (
@@ -31,7 +31,7 @@ PHONE_TO_EMP_ID = {
     "9366497128": "AOD011",
     "6009256086": "AOD012",
     "6363827367": "AOD013",
-    "8837079426": "AOD014", 
+    "8837079426": "AOD014",
     "9609258507": "AOD015",
     "8798300484": "AOD016",
     "9362086831": "AOD017",
@@ -44,7 +44,6 @@ CREDS_FILE = "service_account.json"
 SHEET_NAME = "AOD Master App"
 TAB_NAME_ROSTER = "Roster"
 TAB_NAME_OUTLETS = "Outlets"
-
 LOCATION_TOLERANCE_METERS = 50
 
 def normalize_number(number):
@@ -170,11 +169,15 @@ def handle_location(update: Update, context: CallbackContext):
 
     dist = haversine(user_lat, user_lng, outlet_lat, outlet_lng)
     if dist > LOCATION_TOLERANCE_METERS:
-        update.message.reply_text(f"❌ You are too far from outlet ({int(dist)} meters).", reply_markup=ReplyKeyboardRemove())
+        update.message.reply_text(
+            f"❌ You are too far from outlet ({int(dist)} meters).",
+            reply_markup=ReplyKeyboardRemove()
+        )
         return ConversationHandler.END
 
-    # ✅ IST Timestamp
-    timestamp = datetime.datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
+    # === IST Time ===
+    ist = pytz.timezone('Asia/Kolkata')
+    timestamp = datetime.datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S")
 
     action = context.user_data.get("action")
     col = "Sign-In Time" if action == "signin" else "Sign-Out Time"
