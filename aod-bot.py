@@ -8,8 +8,8 @@ from telegram import (
     InlineKeyboardButton, InlineKeyboardMarkup
 )
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, filters, ConversationHandler, ContextTypes
+    Updater, CommandHandler, MessageHandler,
+    CallbackQueryHandler, Filters, ConversationHandler, CallbackContext
 )
 
 # === States ===
@@ -44,10 +44,7 @@ SHEET_NAME = "AOD Master App"
 TAB_NAME_ROSTER = "Roster"
 TAB_NAME_OUTLETS = "Outlets"
 
-# === Location Tolerance ===
 LOCATION_TOLERANCE_METERS = 50
-
-# === Helpers ===
 
 def normalize_number(number):
     return re.sub(r"\D", "", number)[-10:]
@@ -58,7 +55,6 @@ def haversine(lat1, lon1, lat2, lon2):
     phi2 = math.radians(lat2)
     delta_phi = math.radians(lat2 - lat1)
     delta_lambda = math.radians(lon2 - lon1)
-
     a = math.sin(delta_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
@@ -97,64 +93,50 @@ def update_sheet(sheet, row, column_name, timestamp):
     col_index = sheet.row_values(1).index(column_name) + 1
     sheet.update_cell(row, col_index, timestamp)
 
-# === Bot Handlers ===
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["message_ids"] = [update.message.message_id]  # Track /start command
+def start(update: Update, context: CallbackContext):
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("🟢 Sign In", callback_data="signin")],
         [InlineKeyboardButton("🔴 Sign Out", callback_data="signout")]
     ])
-    msg = await update.message.reply_text("Welcome! What would you like to do today?", reply_markup=buttons)
-    context.user_data["message_ids"].append(msg.message_id)
+    update.message.reply_text("Welcome! What would you like to do today?", reply_markup=buttons)
     return ASK_ACTION
 
-async def action_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def action_selected(update: Update, context: CallbackContext):
     query = update.callback_query
-    await query.answer()
-    action = query.data
-    context.user_data["action"] = action
-    context.user_data["message_ids"].append(query.message.message_id)
+    query.answer()
+    context.user_data["action"] = query.data
 
     contact_button = KeyboardButton("📱 Send Phone Number", request_contact=True)
     markup = ReplyKeyboardMarkup([[contact_button]], one_time_keyboard=True, resize_keyboard=True)
-    msg = await query.message.reply_text("Please verify your phone number:", reply_markup=markup)
-    context.user_data["message_ids"].append(msg.message_id)
+    query.message.reply_text("Please verify your phone number:", reply_markup=markup)
     return ASK_PHONE
 
-async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["message_ids"].append(update.message.message_id)
+def handle_phone(update: Update, context: CallbackContext):
     if not update.message.contact:
-        msg = await update.message.reply_text("❌ Please send your phone number using the button.")
-        context.user_data["message_ids"].append(msg.message_id)
+        update.message.reply_text("❌ Please send your phone number using the button.")
         return ASK_PHONE
 
     phone = normalize_number(update.message.contact.phone_number)
     emp_id = PHONE_TO_EMP_ID.get(phone)
     if not emp_id:
-        msg = await update.message.reply_text("❌ Number not registered.", reply_markup=ReplyKeyboardRemove())
-        context.user_data["message_ids"].append(msg.message_id)
+        update.message.reply_text("❌ Number not registered.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
     outlet, signin, signout, row, sheet = get_outlet_row_by_emp_id(emp_id)
     if not outlet:
-        msg = await update.message.reply_text("❌ No outlet found for your ID.", reply_markup=ReplyKeyboardRemove())
-        context.user_data["message_ids"].append(msg.message_id)
+        update.message.reply_text("❌ No outlet found for your ID.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
     action = context.user_data.get("action")
     if action == "signin" and signin:
-        msg = await update.message.reply_text("✅ You have already signed in today.", reply_markup=ReplyKeyboardRemove())
-        context.user_data["message_ids"].append(msg.message_id)
+        update.message.reply_text("✅ You have already signed in today.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     if action == "signout":
         if not signin:
-            msg = await update.message.reply_text("❌ You must sign in before signing out.", reply_markup=ReplyKeyboardRemove())
-            context.user_data["message_ids"].append(msg.message_id)
+            update.message.reply_text("❌ You must sign in before signing out.", reply_markup=ReplyKeyboardRemove())
             return ConversationHandler.END
         if signout:
-            msg = await update.message.reply_text("✅ You have already signed out today.", reply_markup=ReplyKeyboardRemove())
-            context.user_data["message_ids"].append(msg.message_id)
+            update.message.reply_text("✅ You have already signed out today.", reply_markup=ReplyKeyboardRemove())
             return ConversationHandler.END
 
     context.user_data.update({
@@ -166,15 +148,12 @@ async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     location_button = KeyboardButton("📍 Send Location", request_location=True)
     markup = ReplyKeyboardMarkup([[location_button]], one_time_keyboard=True, resize_keyboard=True)
-    msg = await update.message.reply_text(f"Your Outlet for today is: {outlet}. Please share your current location:", reply_markup=markup)
-    context.user_data["message_ids"].append(msg.message_id)
+    update.message.reply_text(f"Your Outlet for today is: {outlet}. Please share your current location:", reply_markup=markup)
     return ASK_LOCATION
 
-async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["message_ids"].append(update.message.message_id)
+def handle_location(update: Update, context: CallbackContext):
     if not update.message.location:
-        msg = await update.message.reply_text("❌ Please send your live location.")
-        context.user_data["message_ids"].append(msg.message_id)
+        update.message.reply_text("❌ Please send your live location.")
         return ASK_LOCATION
 
     user_lat = update.message.location.latitude
@@ -185,17 +164,15 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     outlet_lat, outlet_lng = get_outlet_coordinates(outlet_code)
     if not outlet_lat:
-        msg = await update.message.reply_text("❌ No coordinates set for your outlet.", reply_markup=ReplyKeyboardRemove())
-        context.user_data["message_ids"].append(msg.message_id)
+        update.message.reply_text("❌ No coordinates set for your outlet.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
     dist = haversine(user_lat, user_lng, outlet_lat, outlet_lng)
     if dist > LOCATION_TOLERANCE_METERS:
-        msg = await update.message.reply_text(
+        update.message.reply_text(
             f"❌ You are too far from outlet ({int(dist)} meters).",
             reply_markup=ReplyKeyboardRemove()
         )
-        context.user_data["message_ids"].append(msg.message_id)
         return ConversationHandler.END
 
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -203,38 +180,34 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     col = "Sign-In Time" if action == "signin" else "Sign-Out Time"
     update_sheet(sheet, row, col, timestamp)
 
-    # Send confirmation message
-    msg = await update.message.reply_text(
+    update.message.reply_text(
         f"✅ {action.replace('sign', 'Sign ').title()} successful.\n📍 Distance from outlet: {int(dist)} meters.",
         reply_markup=ReplyKeyboardRemove()
     )
-    context.user_data["message_ids"].append(msg.message_id)
     return ConversationHandler.END
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["message_ids"].append(update.message.message_id)
-    msg = await update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
-    context.user_data["message_ids"].append(msg.message_id)
+def cancel(update: Update, context: CallbackContext):
+    update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
-
-# === Main ===
 
 def main():
-    app = ApplicationBuilder().token("7571822429:AAFFBPQKzBwFWGkMC0R8UMJF6JrAgj8-5ZE").build()
+    updater = Updater("7571822429:AAFFBPQKzBwFWGkMC0R8UMJF6JrAgj8-5ZE", use_context=True)
+    dp = updater.dispatcher
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
             ASK_ACTION: [CallbackQueryHandler(action_selected)],
-            ASK_PHONE: [MessageHandler(filters.CONTACT, handle_phone)],
-            ASK_LOCATION: [MessageHandler(filters.LOCATION, handle_location)],
+            ASK_PHONE: [MessageHandler(Filters.contact, handle_phone)],
+            ASK_LOCATION: [MessageHandler(Filters.location, handle_location)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    app.add_handler(conv_handler)
+    dp.add_handler(conv_handler)
     print("✅ Bot is running...")
-    app.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
