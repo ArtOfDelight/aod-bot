@@ -1,6 +1,7 @@
 import re
 import math
 import datetime
+from zoneinfo import ZoneInfo  # ✅ Added for IST
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import (
@@ -169,13 +170,12 @@ def handle_location(update: Update, context: CallbackContext):
 
     dist = haversine(user_lat, user_lng, outlet_lat, outlet_lng)
     if dist > LOCATION_TOLERANCE_METERS:
-        update.message.reply_text(
-            f"❌ You are too far from outlet ({int(dist)} meters).",
-            reply_markup=ReplyKeyboardRemove()
-        )
+        update.message.reply_text(f"❌ You are too far from outlet ({int(dist)} meters).", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # ✅ IST Timestamp
+    timestamp = datetime.datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
+
     action = context.user_data.get("action")
     col = "Sign-In Time" if action == "signin" else "Sign-Out Time"
     update_sheet(sheet, row, col, timestamp)
