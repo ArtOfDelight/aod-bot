@@ -91,6 +91,10 @@ def update_sheet(sheet, row, column_name, timestamp):
 # === Bot Handlers ===
 
 def start(update: Update, context):
+    bot.set_my_commands([
+        ("start", "Start sign-in or sign-out"),
+        ("reset", "Reset conversation")
+    ])
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("🟢 Sign In", callback_data="signin")],
         [InlineKeyboardButton("🔴 Sign Out", callback_data="signout")]
@@ -155,7 +159,6 @@ def handle_location(update: Update, context):
         update.message.reply_text(f"❌ You are too far from outlet ({int(dist)} meters).", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
-    # Time logic with 5 AM threshold
     now = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
     action = context.user_data["action"]
     column = "Sign-In Time" if action == "signin" else "Sign-Out Time"
@@ -168,8 +171,8 @@ def handle_location(update: Update, context):
             update.message.reply_text("❌ Error reading Sign-In Time. Please contact admin.", reply_markup=ReplyKeyboardRemove())
             return ConversationHandler.END
 
-        # If sign out is before 5 AM next day, use sign-in's date
-        if now < (sign_in_time + datetime.timedelta(days=1, hours=5 - sign_in_time.hour)):
+        # If signout is before 5 AM next day, use sign-in's date
+        if now < (sign_in_time.replace(hour=5, minute=0, second=0) + datetime.timedelta(days=1)):
             timestamp = sign_in_time.strftime("%Y-%m-%d") + f" {now.strftime('%H:%M:%S')}"
         else:
             timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -184,9 +187,12 @@ def handle_location(update: Update, context):
     )
     return ConversationHandler.END
 
-
 def cancel(update: Update, context):
     update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+def reset(update: Update, context):
+    update.message.reply_text("🔄 Conversation reset. Use /start to begin again.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 # === Dispatcher & Webhook ===
@@ -205,8 +211,14 @@ def setup_dispatcher():
             ASK_PHONE: [MessageHandler(Filters.contact, handle_phone)],
             ASK_LOCATION: [MessageHandler(Filters.location, handle_location)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("reset", reset),  # ✅ Fallback reset
+        ],
     ))
+
+    # ✅ Global reset command in case user is not in any conversation
+    dispatcher.add_handler(CommandHandler("reset", reset))
 
 def set_webhook():
     bot.set_webhook(f"{WEBHOOK_URL}{WEBHOOK_PATH}")
@@ -216,6 +228,5 @@ def set_webhook():
 if __name__ == "__main__":
     setup_dispatcher()
     set_webhook()
-    port = int(os.environ.get("PORT", 5000))  # 5000 is default for local
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
