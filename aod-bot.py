@@ -17,7 +17,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 # === CONFIGURATION ===
 BOT_TOKEN = "7571822429:AAFFBPQKzBwFWGkMC0R8UMJF6JrAgj8-5ZE"  # 🔁 Replace
-WEBHOOK_URL = "https://YOUR_RENDER_APP_URL.onrender.com"  # 🔁 Replace after deployment
+WEBHOOK_URL = "https://aod-bot-t2ux.onrender.com"  # 🔁 Replace after deployment
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
