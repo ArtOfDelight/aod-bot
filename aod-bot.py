@@ -1,7 +1,7 @@
 import re
 import math
 import datetime
-from zoneinfo import ZoneInfo  # ✅ Added for IST
+from zoneinfo import ZoneInfo
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import (
@@ -66,8 +66,10 @@ def get_outlet_row_by_emp_id(emp_id):
     sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_ROSTER)
     records = sheet.get_all_records()
 
+    today_str = datetime.datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
+
     for idx, row in enumerate(records, start=2):
-        if str(row.get("Employee ID")).strip() == emp_id:
+        if str(row.get("Employee ID")).strip() == emp_id and str(row.get("Date")).strip() == today_str:
             outlet = str(row.get("Outlet")).strip()
             signin = row.get("Sign-In Time")
             signout = row.get("Sign-Out Time")
@@ -125,7 +127,7 @@ def handle_phone(update: Update, context: CallbackContext):
 
     outlet, signin, signout, row, sheet = get_outlet_row_by_emp_id(emp_id)
     if not outlet:
-        update.message.reply_text("❌ No outlet found for your ID.", reply_markup=ReplyKeyboardRemove())
+        update.message.reply_text("❌ No outlet or roster entry for today.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
     action = context.user_data.get("action")
@@ -173,7 +175,6 @@ def handle_location(update: Update, context: CallbackContext):
         update.message.reply_text(f"❌ You are too far from outlet ({int(dist)} meters).", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
-    # ✅ IST Timestamp
     timestamp = datetime.datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
 
     action = context.user_data.get("action")
@@ -191,7 +192,7 @@ def cancel(update: Update, context: CallbackContext):
     return ConversationHandler.END
 
 def main():
-    updater = Updater("7571822429:AAFFBPQKzBwFWGkMC0R8UMJF6JrAgj8-5ZE", use_context=True)
+    updater = Updater("YOUR_BOT_TOKEN_HERE", use_context=True)
     dp = updater.dispatcher
 
     conv_handler = ConversationHandler(
