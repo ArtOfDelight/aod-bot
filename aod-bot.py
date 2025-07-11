@@ -192,7 +192,7 @@ def cancel(update: Update, context: CallbackContext):
     return ConversationHandler.END
 
 def main():
-    updater = Updater("YOUR_BOT_TOKEN_HERE", use_context=True)
+    updater = Updater("7571822429:AAFFBPQKzBwFWGkMC0R8UMJF6JrAgj8-5ZE", use_context=True)
     dp = updater.dispatcher
 
     conv_handler = ConversationHandler(
