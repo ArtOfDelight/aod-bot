@@ -1,4 +1,5 @@
 # === Import modules ===
+import os
 import re
 import math
 import datetime
@@ -186,4 +187,6 @@ def set_webhook():
 if __name__ == "__main__":
     setup_dispatcher()
     set_webhook()
-    app.run(port=8443)
+    port = int(os.environ.get("PORT", 5000))  # 5000 is default for local
+    app.run(host="0.0.0.0", port=port)
+
