@@ -141,20 +141,49 @@ def handle_location(update: Update, context):
     if not update.message.location:
         update.message.reply_text("❌ Please send your live location.")
         return ASK_LOCATION
+
     user_lat, user_lng = update.message.location.latitude, update.message.location.longitude
     outlet_lat, outlet_lng = get_outlet_coordinates(context.user_data["outlet_code"])
+
     if not outlet_lat:
         update.message.reply_text("❌ No coordinates set for this outlet.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
+
     dist = haversine(user_lat, user_lng, outlet_lat, outlet_lng)
+
     if dist > LOCATION_TOLERANCE_METERS:
         update.message.reply_text(f"❌ You are too far from outlet ({int(dist)} meters).", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-    timestamp = datetime.datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
-    column = "Sign-In Time" if context.user_data["action"] == "signin" else "Sign-Out Time"
+
+    # Time logic with 5 AM threshold
+    now = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
+    action = context.user_data["action"]
+    column = "Sign-In Time" if action == "signin" else "Sign-Out Time"
+
+    if action == "signout":
+        sign_in_str = context.user_data["sheet"].cell(context.user_data["row"], context.user_data["sheet"].row_values(1).index("Sign-In Time") + 1).value
+        try:
+            sign_in_time = datetime.datetime.strptime(sign_in_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+        except Exception as e:
+            update.message.reply_text("❌ Error reading Sign-In Time. Please contact admin.", reply_markup=ReplyKeyboardRemove())
+            return ConversationHandler.END
+
+        # If sign out is before 5 AM next day, use sign-in's date
+        if now < (sign_in_time + datetime.timedelta(days=1, hours=5 - sign_in_time.hour)):
+            timestamp = sign_in_time.strftime("%Y-%m-%d") + f" {now.strftime('%H:%M:%S')}"
+        else:
+            timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+
     update_sheet(context.user_data["sheet"], context.user_data["row"], column, timestamp)
-    update.message.reply_text(f"✅ {context.user_data['action'].replace('sign', 'Sign ').title()} successful.\n📍 Distance: {int(dist)} meters.", reply_markup=ReplyKeyboardRemove())
+
+    update.message.reply_text(
+        f"✅ {action.replace('sign', 'Sign ').title()} successful.\n📍 Distance: {int(dist)} meters.",
+        reply_markup=ReplyKeyboardRemove()
+    )
     return ConversationHandler.END
+
 
 def cancel(update: Update, context):
     update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
