@@ -38,7 +38,6 @@ dispatcher = Dispatcher(bot, None, workers=4)
 ASK_ACTION, ASK_PHONE, ASK_LOCATION = range(3)
 
 # === Utility Functions ===
-
 def normalize_number(number):
     return re.sub(r"\D", "", number)[-10:]
 
@@ -89,12 +88,7 @@ def update_sheet(sheet, row, column_name, timestamp):
     sheet.update_cell(row, col_index, timestamp)
 
 # === Bot Handlers ===
-
 def start(update: Update, context):
-    bot.set_my_commands([
-        ("start", "Start sign-in or sign-out"),
-        ("reset", "Reset conversation")
-    ])
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("🟢 Sign In", callback_data="signin")],
         [InlineKeyboardButton("🔴 Sign Out", callback_data="signout")]
@@ -154,7 +148,6 @@ def handle_location(update: Update, context):
         return ConversationHandler.END
 
     dist = haversine(user_lat, user_lng, outlet_lat, outlet_lng)
-
     if dist > LOCATION_TOLERANCE_METERS:
         update.message.reply_text(f"❌ You are too far from outlet ({int(dist)} meters).", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
@@ -167,12 +160,11 @@ def handle_location(update: Update, context):
         sign_in_str = context.user_data["sheet"].cell(context.user_data["row"], context.user_data["sheet"].row_values(1).index("Sign-In Time") + 1).value
         try:
             sign_in_time = datetime.datetime.strptime(sign_in_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo("Asia/Kolkata"))
-        except Exception as e:
+        except:
             update.message.reply_text("❌ Error reading Sign-In Time. Please contact admin.", reply_markup=ReplyKeyboardRemove())
             return ConversationHandler.END
 
-        # If signout is before 5 AM next day, use sign-in's date
-        if now < (sign_in_time.replace(hour=5, minute=0, second=0) + datetime.timedelta(days=1)):
+        if now < (sign_in_time + datetime.timedelta(days=1, hours=5 - sign_in_time.hour)):
             timestamp = sign_in_time.strftime("%Y-%m-%d") + f" {now.strftime('%H:%M:%S')}"
         else:
             timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -192,7 +184,7 @@ def cancel(update: Update, context):
     return ConversationHandler.END
 
 def reset(update: Update, context):
-    update.message.reply_text("🔄 Conversation reset. Use /start to begin again.", reply_markup=ReplyKeyboardRemove())
+    update.message.reply_text("🔁 Reset successful. Use /start to begin again.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 # === Dispatcher & Webhook ===
@@ -213,12 +205,16 @@ def setup_dispatcher():
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
-            CommandHandler("reset", reset),  # ✅ Fallback reset
+            CommandHandler("reset", reset)
         ],
     ))
-
-    # ✅ Global reset command in case user is not in any conversation
     dispatcher.add_handler(CommandHandler("reset", reset))
+
+    # ✅ Add to Telegram menu
+    bot.set_my_commands([
+        ("start", "Start sign-in or sign-out"),
+        ("reset", "Reset the conversation")
+    ])
 
 def set_webhook():
     bot.set_webhook(f"{WEBHOOK_URL}{WEBHOOK_PATH}")
