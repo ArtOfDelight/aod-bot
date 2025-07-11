@@ -17,12 +17,12 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # === CONFIGURATION ===
-BOT_TOKEN = "7571822429:AAFFBPQKzBwFWGkMC0R8UMJF6JrAgj8-5ZE"  # 🔁 Replace
-WEBHOOK_URL = "https://aod-bot-t2ux.onrender.com"  # 🔁 Replace after deployment
+BOT_TOKEN = "7571822429:AAFFBPQKzBwFWGkMC0R8UMJF6JrAgj8-5ZE"
+WEBHOOK_URL = "https://aod-bot-t2ux.onrender.com"
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-CREDS_FILE = "service_account.json"  # 🔁 Keep your JSON file here
+CREDS_FILE = "service_account.json"
 SHEET_NAME = "AOD Master App"
 TAB_NAME_ROSTER = "Roster"
 TAB_NAME_OUTLETS = "Outlets"
@@ -184,7 +184,7 @@ def cancel(update: Update, context):
     return ConversationHandler.END
 
 def reset(update: Update, context):
-    update.message.reply_text("🔁 Reset successful. Use /start to begin again.", reply_markup=ReplyKeyboardRemove())
+    update.message.reply_text("🔁 Reset successful. You can now use /start again.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 # === Dispatcher & Webhook ===
@@ -210,9 +210,8 @@ def setup_dispatcher():
     ))
     dispatcher.add_handler(CommandHandler("reset", reset))
 
-    # ✅ Add to Telegram menu
+    # ✅ ONLY show /reset in Telegram menu
     bot.set_my_commands([
-        ("start", "Start sign-in or sign-out"),
         ("reset", "Reset the conversation")
     ])
 
