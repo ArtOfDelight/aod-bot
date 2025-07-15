@@ -61,14 +61,24 @@ def get_phone_to_empid_map():
     }
 
 def get_outlet_row_by_emp_id(emp_id):
-    today_str = datetime.datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d/%m/%Y")
+    now = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
+    
+    # If it's before 4 AM, use yesterday's date
+    if now.hour < 4:
+        target_date = (now - datetime.timedelta(days=1)).strftime("%d/%m/%Y")
+    else:
+        target_date = now.strftime("%d/%m/%Y")
+
     creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
     sheet = gspread.authorize(creds).open(SHEET_NAME).worksheet(TAB_NAME_ROSTER)
     records = sheet.get_all_records()
-    for idx, row in enumerate(records, start=2):
-        if str(row.get("Employee ID")).strip() == emp_id and str(row.get("Date")).strip() == today_str:
+
+    for idx, row in enumerate(records, start=2):  # start=2 accounts for header row
+        if str(row.get("Employee ID")).strip() == emp_id and str(row.get("Date")).strip() == target_date:
             return str(row.get("Outlet")).strip(), row.get("Sign-In Time"), row.get("Sign-Out Time"), idx, sheet
+
     return None, None, None, None, None
+
 
 def get_outlet_coordinates(outlet_code):
     creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
