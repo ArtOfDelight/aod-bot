@@ -230,8 +230,6 @@ def set_webhook():
     print(f"✅ Webhook set at {WEBHOOK_URL}{WEBHOOK_PATH}")
 
 # === Main Entry Point ===
-if __name__ == "__main__":
-    setup_dispatcher()
-    set_webhook()
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+setup_dispatcher()
+set_webhook()
+
