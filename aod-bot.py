@@ -79,7 +79,6 @@ def get_outlet_row_by_emp_id(emp_id):
 
     return None, None, None, None, None
 
-
 def get_outlet_coordinates(outlet_code):
     creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
     sheet = gspread.authorize(creds).open(SHEET_NAME).worksheet(TAB_NAME_OUTLETS)
@@ -166,8 +165,11 @@ def handle_location(update: Update, context):
     action = context.user_data["action"]
     column = "Sign-In Time" if action == "signin" else "Sign-Out Time"
 
+    # ✅ Updated: Use current timestamp (not roster date) even after 4 AM logic
     if action == "signout":
-        sign_in_str = context.user_data["sheet"].cell(context.user_data["row"], context.user_data["sheet"].row_values(1).index("Sign-In Time") + 1).value
+        sign_in_str = context.user_data["sheet"].cell(
+            context.user_data["row"], context.user_data["sheet"].row_values(1).index("Sign-In Time") + 1
+        ).value
         try:
             sign_in_time = datetime.datetime.strptime(sign_in_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo("Asia/Kolkata"))
         except:
@@ -175,7 +177,7 @@ def handle_location(update: Update, context):
             return ConversationHandler.END
 
         if now < (sign_in_time + datetime.timedelta(days=1, hours=5 - sign_in_time.hour)):
-            timestamp = sign_in_time.strftime("%Y-%m-%d") + f" {now.strftime('%H:%M:%S')}"
+            timestamp = now.strftime("%Y-%m-%d %H:%M:%S")  # ✅ Use now, not sign_in_time date
         else:
             timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
     else:
@@ -232,4 +234,3 @@ def set_webhook():
 # === Main Entry Point ===
 setup_dispatcher()
 set_webhook()
-
