@@ -1,4 +1,3 @@
-# === Import modules ===
 import os
 import re
 import math
@@ -15,6 +14,10 @@ from telegram.ext import (
 )
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import requests
+
+MANAGER_CHAT_ID = 1225343546  # Replace with the actual Telegram chat ID
+INDIA_TZ = ZoneInfo("Asia/Kolkata")
 
 # === CONFIGURATION ===
 BOT_TOKEN = "7571822429:AAFFBPQKzBwFWGkMC0R8UMJF6JrAgj8-5ZE"
@@ -50,6 +53,103 @@ def haversine(lat1, lon1, lat2, lon2):
     a = math.sin(delta_phi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(delta_lambda/2)**2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
+
+def send_attendance_report(update: Update, context, mode="signin_only"):
+    try:
+        now = datetime.datetime.now(INDIA_TZ)
+
+        # Determine the report date
+        if mode == "full_yesterday":
+            report_date = (now - datetime.timedelta(days=1)).strftime("%d/%m/%Y")
+        else:
+            # For today's sign-in checks (before 4 AM, use yesterday)
+            report_date = (now - datetime.timedelta(days=1) if now.hour < 4 else now).strftime("%d/%m/%Y")
+
+        gc = gspread.authorize(ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE))
+        roster_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_ROSTER)
+        emp_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
+
+        roster = roster_sheet.get_all_records()
+        emp_register = emp_sheet.get_all_records()
+
+        # Map Employee ID → Short Name
+        emp_id_to_name = {
+            str(row.get("Employee ID")).strip(): row.get("Short Name", "Unnamed")
+            for row in emp_register if row.get("Employee ID")
+        }
+
+        # Group records by outlet, excluding "WO"
+        outlet_records = {}
+        for row in roster:
+            if str(row.get("Date", "")).strip() != report_date:
+                continue
+
+            emp_id = str(row.get("Employee ID", "")).strip()
+            short_name = emp_id_to_name.get(emp_id, emp_id)
+            outlet = row.get("Outlet", "").strip()
+            
+            # Skip records for outlet "WO" (case-insensitive)
+            if outlet.lower() == "wo":
+                continue
+
+            signin = str(row.get("Sign-In Time", "")).strip()
+            signout = str(row.get("Sign-Out Time", "")).strip()
+            start_time = str(row.get("Start Time", "")).strip() or "N/A"
+
+            if mode == "signin_only" and not signin:
+                if outlet not in outlet_records:
+                    outlet_records[outlet] = []
+                outlet_records[outlet].append((short_name, start_time, None, None))
+            elif mode == "full_yesterday":
+                # Only include employees who haven't completed both sign-in and sign-out
+                if not (signin and signout):
+                    if outlet not in outlet_records:
+                        outlet_records[outlet] = []
+                    sign_in_status = "✅" if signin else "❌"
+                    sign_out_status = "✅" if signout else "❌"
+                    outlet_records[outlet].append((short_name, start_time, sign_in_status, sign_out_status))
+
+        # No issues? Skip report
+        if not outlet_records:
+            update.message.reply_text(f"No missing records for {mode.replace('_', ' ')}.")
+            return
+
+        # Build the message with Markdown code blocks
+        header_date = "today" if mode == "signin_only" else report_date
+        message = [f"Attendance Report for {header_date}", "```"]
+        
+        # Sort outlets alphabetically
+        for outlet in sorted(outlet_records.keys()):
+            message.append(f"Outlet: {outlet}")
+            if mode == "signin_only":
+                message.append("Name         Start Time  Status")
+                message.append("------------ ----------- ------")
+                for name, start_time, _, _ in sorted(outlet_records[outlet]):  # Sort by name
+                    message.append(f"{name[:12]:<12} {start_time[:8]:<8} Not Signed In")
+            else:
+                message.append("Name         Start Time  Sign In  Sign Out")
+                message.append("------------ ----------- -------- --------")
+                for name, start_time, sign_in, sign_out in sorted(outlet_records[outlet]):  # Sort by name
+                    message.append(f"{name[:12]:<12} {start_time[:8]:<8} {sign_in:<8} {sign_out}")
+            message.append("")  # Empty line between outlets
+
+        # Add summary
+        total_records = sum(len(records) for records in outlet_records.values())
+        message.append(f"Total Missing Records: {total_records}")
+        message.append("```")
+
+        update.message.reply_text("\n".join(message).strip(), parse_mode="Markdown")
+        print(f"Attendance report sent for {mode}")
+
+    except Exception as e:
+        update.message.reply_text(f"Error generating report: {e}")
+        print(f"Error sending report: {e}")
+
+def statustoday(update: Update, context):
+    send_attendance_report(update, context, mode="signin_only")
+
+def statusyesterday(update: Update, context):
+    send_attendance_report(update, context, mode="full_yesterday")
 
 def get_phone_to_empid_map():
     creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
@@ -165,7 +265,6 @@ def handle_location(update: Update, context):
     action = context.user_data["action"]
     column = "Sign-In Time" if action == "signin" else "Sign-Out Time"
 
-    # ✅ Updated: Use current timestamp (not roster date) even after 4 AM logic
     if action == "signout":
         sign_in_str = context.user_data["sheet"].cell(
             context.user_data["row"], context.user_data["sheet"].row_values(1).index("Sign-In Time") + 1
@@ -177,7 +276,7 @@ def handle_location(update: Update, context):
             return ConversationHandler.END
 
         if now < (sign_in_time + datetime.timedelta(days=1, hours=5 - sign_in_time.hour)):
-            timestamp = now.strftime("%Y-%m-%d %H:%M:%S")  # ✅ Use now, not sign_in_time date
+            timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
         else:
             timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
     else:
@@ -200,7 +299,6 @@ def reset(update: Update, context):
     return ConversationHandler.END
 
 # === Dispatcher & Webhook ===
-
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), bot)
@@ -219,17 +317,32 @@ def setup_dispatcher():
             CommandHandler("cancel", cancel),
             CommandHandler("reset", reset)
         ],
+        per_message=True
     ))
     dispatcher.add_handler(CommandHandler("reset", reset))
+    dispatcher.add_handler(CommandHandler("statustoday", statustoday))
+    dispatcher.add_handler(CommandHandler("statusyesterday", statusyesterday))
 
-    # ✅ ONLY show /reset in Telegram menu
-    bot.set_my_commands([
-        ("reset", "Reset the conversation")
-    ])
+    try:
+        bot.set_my_commands([
+            ("reset", "Reset the conversation"),
+            ("statustoday", "Show today's sign-in status"),
+            ("statusyesterday", "Show yesterday's full attendance report")
+        ])
+        print("Bot commands set successfully.")
+    except Exception as e:
+        print(f"Failed to set bot commands: {e}")
 
 def set_webhook():
-    bot.set_webhook(f"{WEBHOOK_URL}{WEBHOOK_PATH}")
-    print(f"✅ Webhook set at {WEBHOOK_URL}{WEBHOOK_PATH}")
+    try:
+        response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe")
+        if response.json().get("ok"):
+            bot.set_webhook(f"{WEBHOOK_URL}{WEBHOOK_PATH}")
+            print(f"Webhook set at {WEBHOOK_URL}{WEBHOOK_PATH}")
+        else:
+            print(f"Invalid BOT_TOKEN: {response.json().get('description')}")
+    except Exception as e:
+        print(f"Error setting webhook: {e}")
 
 # === Main Entry Point ===
 setup_dispatcher()
