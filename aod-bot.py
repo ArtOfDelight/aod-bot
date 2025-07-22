@@ -94,12 +94,25 @@ def send_attendance_report(update: Update, context, mode="signin_only"):
 
             signin = str(row.get("Sign-In Time", "")).strip()
             signout = str(row.get("Sign-Out Time", "")).strip()
-            start_time = str(row.get("Start Time", "")).strip() or "N/A"
+            start_time_str = str(row.get("Start Time", "")).strip() or "N/A"
 
             if mode == "signin_only" and not signin:
-                if outlet not in outlet_records:
-                    outlet_records[outlet] = []
-                outlet_records[outlet].append((short_name, start_time, None, None))
+                # Parse start time and compare with current time
+                if start_time_str != "N/A":
+                    try:
+                        # Convert start time string (e.g., "09:30:00") to datetime for comparison
+                        start_time = datetime.datetime.strptime(start_time_str, "%H:%M:%S").time()
+                        current_time = now.time()  # Get only the time portion of now
+                        if start_time <= current_time:  # Include if start time has passed
+                            if outlet not in outlet_records:
+                                outlet_records[outlet] = []
+                            outlet_records[outlet].append((short_name, start_time_str, None, None))
+                    except ValueError:
+                        # Skip if start time format is invalid
+                        continue
+                else:
+                    # Skip if no start time is provided
+                    continue
             elif mode == "full_yesterday":
                 # Only include employees who haven't completed both sign-in and sign-out
                 if not (signin and signout):
@@ -107,7 +120,7 @@ def send_attendance_report(update: Update, context, mode="signin_only"):
                         outlet_records[outlet] = []
                     sign_in_status = "✅" if signin else "❌"
                     sign_out_status = "✅" if signout else "❌"
-                    outlet_records[outlet].append((short_name, start_time, sign_in_status, sign_out_status))
+                    outlet_records[outlet].append((short_name, start_time_str, sign_in_status, sign_out_status))
 
         # No issues? Skip report
         if not outlet_records:
@@ -122,15 +135,22 @@ def send_attendance_report(update: Update, context, mode="signin_only"):
         for outlet in sorted(outlet_records.keys()):
             message.append(f"Outlet: {outlet}")
             if mode == "signin_only":
-                message.append("Name         Start Time  Status")
-                message.append("------------ ----------- ------")
+                # Determine the maximum name length for this outlet
+                max_name_length = max(len(name) for name, _, _, _ in outlet_records[outlet])
+                message.append(f"{'Name':<{max_name_length}}  {'Start Time':<10}  {'Status':<10}")
+                message.append("-" * max_name_length + "  " + "-" * 10 + "  " + "-" * 10)
                 for name, start_time, _, _ in sorted(outlet_records[outlet]):  # Sort by name
-                    message.append(f"{name[:12]:<12} {start_time[:8]:<8} Not Signed In")
+                    message.append(f"{name:<{max_name_length}}  {start_time[:10]:<10}  {'Not Signed In':<10}")
             else:
-                message.append("Name         Start Time  Sign In  Sign Out")
-                message.append("------------ ----------- -------- --------")
+                # Determine the maximum name length for this outlet
+                max_name_length = max(len(name) for name, _, _, _ in outlet_records[outlet])
+                message.append(f"{'Name':<{max_name_length}}  {'Start Time':<10}  {'Sign In':<8}  {'Sign Out':<8}")
+                message.append("-" * max_name_length + "  " + "-" * 10 + "  " + "-" * 8 + "  " + "-" * 8)
                 for name, start_time, sign_in, sign_out in sorted(outlet_records[outlet]):  # Sort by name
-                    message.append(f"{name[:12]:<12} {start_time[:8]:<8} {sign_in:<8} {sign_out}")
+                    # Add two spaces before the symbols to shift them right for centering
+                    sign_in_display = "  " + sign_in if sign_in in ["✅", "❌"] else sign_in
+                    sign_out_display = "  " + sign_out if sign_out in ["✅", "❌"] else sign_out
+                    message.append(f"{name:<{max_name_length}}  {start_time[:10]:<10}  {sign_in_display:<8}  {sign_out_display:<8}")
             message.append("")  # Empty line between outlets
 
         # Add summary
@@ -198,6 +218,7 @@ def update_sheet(sheet, row, column_name, timestamp):
 
 # === Bot Handlers ===
 def start(update: Update, context):
+    print(f"Start command received from user: {update.message.from_user.id}, chat: {update.message.chat_id}")  # Debug log
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("🟢 Sign In", callback_data="signin")],
         [InlineKeyboardButton("🔴 Sign Out", callback_data="signout")]
@@ -302,6 +323,7 @@ def reset(update: Update, context):
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), bot)
+    print(f"Received update: {update}")  # Debug log
     dispatcher.process_update(update)
     return "OK"
 
@@ -316,8 +338,7 @@ def setup_dispatcher():
         fallbacks=[
             CommandHandler("cancel", cancel),
             CommandHandler("reset", reset)
-        ],
-        per_message=True
+        ]
     ))
     dispatcher.add_handler(CommandHandler("reset", reset))
     dispatcher.add_handler(CommandHandler("statustoday", statustoday))
@@ -325,6 +346,7 @@ def setup_dispatcher():
 
     try:
         bot.set_my_commands([
+            ("start", "Start the bot"),
             ("reset", "Reset the conversation"),
             ("statustoday", "Show today's sign-in status"),
             ("statusyesterday", "Show yesterday's full attendance report")
@@ -336,11 +358,13 @@ def setup_dispatcher():
 def set_webhook():
     try:
         response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe")
-        if response.json().get("ok"):
+        response_data = response.json()
+        print(f"getMe response: {response_data}")  # Debug log
+        if isinstance(response_data, dict) and response_data.get("ok"):
             bot.set_webhook(f"{WEBHOOK_URL}{WEBHOOK_PATH}")
             print(f"Webhook set at {WEBHOOK_URL}{WEBHOOK_PATH}")
         else:
-            print(f"Invalid BOT_TOKEN: {response.json().get('description')}")
+            print(f"Invalid BOT_TOKEN or API error: {response_data}")
     except Exception as e:
         print(f"Error setting webhook: {e}")
 
