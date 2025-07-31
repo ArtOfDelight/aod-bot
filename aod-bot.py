@@ -30,6 +30,7 @@ SHEET_NAME = "AOD Master App"
 TAB_NAME_ROSTER = "Roster"
 TAB_NAME_OUTLETS = "Outlets"
 TAB_NAME_EMP_REGISTER = "EmployeeRegister"
+TAB_NAME_SHIFTS = "Shifts"
 LOCATION_TOLERANCE_METERS = 50
 
 # === Flask + Telegram Setup ===
@@ -173,15 +174,16 @@ def statusyesterday(update: Update, context):
 
 def getroster(update: Update, context):
     try:
-        now = datetime.datetime.now(INDIA_TZ)
-        # Determine today's date (before 4 AM, use yesterday)
-        target_date = (now - datetime.timedelta(days=1) if now.hour < 4 else now).strftime("%d/%m/%Y")
-
+        # Fetch data from Google Sheet
         gc = gspread.authorize(ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE))
         roster_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_ROSTER)
+        outlet_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_OUTLETS)
+        shift_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_SHIFTS)
         emp_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
 
         roster = roster_sheet.get_all_records()
+        outlet_records = outlet_sheet.get_all_records()
+        shift_records = shift_sheet.get_all_records()
         emp_register = emp_sheet.get_all_records()
 
         # Map Employee ID → Short Name
@@ -190,38 +192,54 @@ def getroster(update: Update, context):
             for row in emp_register if row.get("Employee ID")
         }
 
-        # Collect roster records for today
-        roster_records = []
+        # Map outlet codes to outlet names (case-insensitive)
+        outlet_code_to_name = {
+            str(row.get("Outlet Code")).strip().lower(): str(row.get("Outlet Name")).strip()
+            for row in outlet_records if row.get("Outlet Code") and row.get("Outlet Name")
+        }
+
+        # Map shift IDs to shift names
+        shift_id_to_name = {
+            str(row.get("Shift ID")).strip(): str(row.get("Shift Name")).strip()
+            for row in shift_records if row.get("Shift ID") and row.get("Shift Name")
+        }
+
+        # Process roster data for today
+        now = datetime.datetime.now(INDIA_TZ)
+        target_date = now.strftime("%d/%m/%Y")  # 31/07/2025
+        outlet_groups = {}
+
         for row in roster:
-            if str(row.get("Date", "")).strip() == target_date:
-                emp_id = str(row.get("Employee ID", "")).strip()
-                outlet = str(row.get("Outlet", "")).strip()
-                # Skip records for outlet "WO" (case-insensitive)
-                if outlet.lower() == "wo":
-                    continue
-                name = emp_id_to_name.get(emp_id, emp_id)
-                start_time = str(row.get("Start Time", "N/A")).strip()
-                end_time = str(row.get("End Time", "N/A")).strip()
-                roster_records.append((name, outlet, start_time, end_time))
+            if str(row.get("Date", "")).strip() != target_date:
+                continue
+
+            emp_id = str(row.get("Employee ID", "")).strip()
+            name = emp_id_to_name.get(emp_id, emp_id)  # Use employee name or fallback to ID
+            outlet_code = str(row.get("Outlet", "")).strip()
+            if outlet_code.lower() == "wo":
+                continue  # Skip WO outlets
+            outlet_name = outlet_code_to_name.get(outlet_code.lower(), outlet_code)  # Get full outlet name
+            shift_id = str(row.get("Shift", "")).strip()
+            shift_name = shift_id_to_name.get(shift_id, "Unknown")  # Map shift ID to shift name
+
+            if outlet_name not in outlet_groups:
+                outlet_groups[outlet_name] = []
+            outlet_groups[outlet_name].append((name, shift_name))
 
         # If no records found
-        if not roster_records:
+        if not outlet_groups:
             update.message.reply_text(f"No roster records found for today ({target_date}).")
             return
 
         # Build the message
-        message = [f"Roster for Today ({target_date})", "```"]
-        # Determine maximum name length for alignment
-        max_name_length = max(len(name) for name, _, _, _ in roster_records)
-        # Add header
-        message.append(f"{'Name':<{max_name_length}}  {'Outlet':<10}  {'Sign In':<10}  {'Sign Out':<10}")
-        message.append("-" * max_name_length + "  " + "-" * 10 + "  " + "-" * 10 + "  " + "-" * 10)
-        # Add sorted records (by name)
-        for name, outlet, start_time, end_time in sorted(roster_records):
-            message.append(f"{name:<{max_name_length}}  {outlet:<10}  {start_time[:10]:<10}  {end_time[:10]:<10}")
-        message.append("```")
+        message = [f"Roster for Today ({target_date}):"]
+        for outlet_name in sorted(outlet_groups.keys()):  # Sort outlets alphabetically
+            message.append(f"Outlet: {outlet_name}")
+            for name, shift_name in sorted(outlet_groups[outlet_name]):  # Sort employees by name
+                message.append(f"{name} - {shift_name}")
+            message.append("")  # Empty line between outlets
 
-        update.message.reply_text("\n".join(message).strip(), parse_mode="Markdown")
+        update.message.reply_text("\n".join(message).strip())
         print(f"Roster report sent for {target_date}")
 
     except Exception as e:
