@@ -171,6 +171,63 @@ def statustoday(update: Update, context):
 def statusyesterday(update: Update, context):
     send_attendance_report(update, context, mode="full_yesterday")
 
+def getroster(update: Update, context):
+    try:
+        now = datetime.datetime.now(INDIA_TZ)
+        # Determine today's date (before 4 AM, use yesterday)
+        target_date = (now - datetime.timedelta(days=1) if now.hour < 4 else now).strftime("%d/%m/%Y")
+
+        gc = gspread.authorize(ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE))
+        roster_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_ROSTER)
+        emp_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
+
+        roster = roster_sheet.get_all_records()
+        emp_register = emp_sheet.get_all_records()
+
+        # Map Employee ID → Short Name
+        emp_id_to_name = {
+            str(row.get("Employee ID")).strip(): row.get("Short Name", "Unnamed")
+            for row in emp_register if row.get("Employee ID")
+        }
+
+        # Collect roster records for today
+        roster_records = []
+        for row in roster:
+            if str(row.get("Date", "")).strip() == target_date:
+                emp_id = str(row.get("Employee ID", "")).strip()
+                outlet = str(row.get("Outlet", "")).strip()
+                # Skip records for outlet "WO" (case-insensitive)
+                if outlet.lower() == "wo":
+                    continue
+                name = emp_id_to_name.get(emp_id, emp_id)
+                start_time = str(row.get("Start Time", "N/A")).strip()
+                end_time = str(row.get("End Time", "N/A")).strip()
+                roster_records.append((name, outlet, start_time, end_time))
+
+        # If no records found
+        if not roster_records:
+            update.message.reply_text(f"No roster records found for today ({target_date}).")
+            return
+
+        # Build the message
+        message = [f"Roster for Today ({target_date})", "```"]
+        # Determine maximum name length for alignment
+        max_name_length = max(len(name) for name, _, _, _ in roster_records)
+        # Add header
+        message.append(f"{'Name':<{max_name_length}}  {'Outlet':<10}  {'Sign In':<10}  {'Sign Out':<10}")
+        message.append("-" * max_name_length + "  " + "-" * 10 + "  " + "-" * 10 + "  " + "-" * 10)
+        # Add sorted records (by name)
+        for name, outlet, start_time, end_time in sorted(roster_records):
+            message.append(f"{name:<{max_name_length}}  {outlet:<10}  {start_time[:10]:<10}  {end_time[:10]:<10}")
+        message.append("```")
+
+        update.message.reply_text("\n".join(message).strip(), parse_mode="Markdown")
+        print(f"Roster report sent for {target_date}")
+
+    except Exception as e:
+        update.message.reply_text(f"Error generating roster: {e}")
+        print(f"Error sending roster: {e}")
+
 def get_phone_to_empid_map():
     creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
     sheet = gspread.authorize(creds).open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
@@ -343,13 +400,15 @@ def setup_dispatcher():
     dispatcher.add_handler(CommandHandler("reset", reset))
     dispatcher.add_handler(CommandHandler("statustoday", statustoday))
     dispatcher.add_handler(CommandHandler("statusyesterday", statusyesterday))
+    dispatcher.add_handler(CommandHandler("getroster", getroster))
 
     try:
         bot.set_my_commands([
             ("start", "Start the bot"),
             ("reset", "Reset the conversation"),
             ("statustoday", "Show today's sign-in status"),
-            ("statusyesterday", "Show yesterday's full attendance report")
+            ("statusyesterday", "Show yesterday's full attendance report"),
+            ("getroster", "Show today's roster")
         ])
         print("Bot commands set successfully.")
     except Exception as e:
