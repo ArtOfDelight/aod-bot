@@ -204,9 +204,14 @@ def getroster(update: Update, context):
             for row in shift_records if row.get("Shift ID") and row.get("Shift Name")
         }
 
-        # Process roster data for today
-        now = datetime.datetime.now(INDIA_TZ)
-        target_date = now.strftime("%d/%m/%Y")  # 31/07/2025
+        # Find the latest date from the Roster tab
+        dates = [datetime.datetime.strptime(str(row.get("Date", "")).strip(), "%d/%m/%Y") for row in roster if row.get("Date")]
+        if not dates:
+            update.message.reply_text("No roster records found.")
+            return
+        target_date = max(dates).strftime("%d/%m/%Y")  # Latest date, e.g., 17/07/2025
+
+        # Process roster data for the latest date
         outlet_groups = {}
 
         for row in roster:
@@ -216,9 +221,7 @@ def getroster(update: Update, context):
             emp_id = str(row.get("Employee ID", "")).strip()
             name = emp_id_to_name.get(emp_id, emp_id)  # Use employee name or fallback to ID
             outlet_code = str(row.get("Outlet", "")).strip()
-            if outlet_code.lower() == "wo":
-                continue  # Skip WO outlets
-            outlet_name = outlet_code_to_name.get(outlet_code.lower(), outlet_code)  # Get full outlet name
+            outlet_name = "Weekly Off" if outlet_code.lower() == "wo" else outlet_code_to_name.get(outlet_code.lower(), outlet_code)
             shift_id = str(row.get("Shift", "")).strip()
             shift_name = shift_id_to_name.get(shift_id, "")  # Map shift ID to shift name
 
@@ -226,29 +229,20 @@ def getroster(update: Update, context):
                 outlet_groups[outlet_name] = []
             outlet_groups[outlet_name].append((name, shift_name))
 
-        # If no records found
+        # If no records found for the latest date
         if not outlet_groups:
             update.message.reply_text(f"No roster records found for today ({target_date}).")
             return
 
-        # Build the message with code block formatting
-        message = ["```"]
-        message.append(f"*Roster for Today ({target_date}):*")
-        message.append("")  # Empty line after header
-        
+        # Build the message
+        message = [f"*Roster for Today ({target_date}):*"]
         for outlet_name in sorted(outlet_groups.keys()):  # Sort outlets alphabetically
             message.append(f"*Outlet: {outlet_name}*")
-            message.append("-" * (len(outlet_name) + 8))  # Underline for outlet name
             for name, shift_name in sorted(outlet_groups[outlet_name]):  # Sort employees by name
                 message.append(f"{name} - {shift_name}")
             message.append("")  # Empty line between outlets
-        
-        # Remove last empty line and close code block
-        if message[-1] == "":
-            message.pop()
-        message.append("```")
 
-        update.message.reply_text("\n".join(message), parse_mode="Markdown")
+        update.message.reply_text("\n".join(message).strip(), parse_mode="Markdown")
         print(f"Roster report sent for {target_date}")
 
     except Exception as e:
