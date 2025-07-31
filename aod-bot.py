@@ -223,7 +223,7 @@ def getroster(update: Update, context):
             outlet_code = str(row.get("Outlet", "")).strip()
             outlet_name = "Weekly Off" if outlet_code.lower() == "wo" else outlet_code_to_name.get(outlet_code.lower(), outlet_code)
             shift_id = str(row.get("Shift", "")).strip()
-            shift_name = shift_id_to_name.get(shift_id, "Unknown")  # Map shift ID to shift name
+            shift_name = shift_id_to_name.get(shift_id, "")  # Map shift ID to shift name
 
             if outlet_name not in outlet_groups:
                 outlet_groups[outlet_name] = []
