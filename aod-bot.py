@@ -232,14 +232,14 @@ def getroster(update: Update, context):
             return
 
         # Build the message
-        message = [f"Roster for Today ({target_date}):"]
+        message = [f"**Roster for Today ({target_date}):**"]
         for outlet_name in sorted(outlet_groups.keys()):  # Sort outlets alphabetically
             message.append(f"Outlet: {outlet_name}")
             for name, shift_name in sorted(outlet_groups[outlet_name]):  # Sort employees by name
                 message.append(f"{name} - {shift_name}")
             message.append("")  # Empty line between outlets
 
-        update.message.reply_text("\n".join(message).strip())
+        update.message.reply_text("\n".join(message).strip(), parse_mode="Markdown")
         print(f"Roster report sent for {target_date}")
 
     except Exception as e:
