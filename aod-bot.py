@@ -220,7 +220,7 @@ def getroster(update: Update, context):
                 continue  # Skip WO outlets
             outlet_name = outlet_code_to_name.get(outlet_code.lower(), outlet_code)  # Get full outlet name
             shift_id = str(row.get("Shift", "")).strip()
-            shift_name = shift_id_to_name.get(shift_id, "Unknown")  # Map shift ID to shift name
+            shift_name = shift_id_to_name.get(shift_id, "")  # Map shift ID to shift name
 
             if outlet_name not in outlet_groups:
                 outlet_groups[outlet_name] = []
@@ -233,11 +233,11 @@ def getroster(update: Update, context):
 
         # Build the message with code block formatting
         message = ["```"]
-        message.append(f"Roster for Today ({target_date}):")
+        message.append(f"*Roster for Today ({target_date}):*")
         message.append("")  # Empty line after header
         
         for outlet_name in sorted(outlet_groups.keys()):  # Sort outlets alphabetically
-            message.append(f"Outlet: {outlet_name}")
+            message.append(f"*Outlet: {outlet_name}*")
             message.append("-" * (len(outlet_name) + 8))  # Underline for outlet name
             for name, shift_name in sorted(outlet_groups[outlet_name]):  # Sort employees by name
                 message.append(f"{name} - {shift_name}")
