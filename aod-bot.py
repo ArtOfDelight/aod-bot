@@ -20,7 +20,7 @@ MANAGER_CHAT_ID = 1225343546  # Replace with the actual Telegram chat ID
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
 
 # === CONFIGURATION ===
-BOT_TOKEN = "7571822429:AAFFBPQKzBwFWGkMC0R8UMJF6JrAgj8-5ZE"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = "https://aod-bot-t2ux.onrender.com"
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 
