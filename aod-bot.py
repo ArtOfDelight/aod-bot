@@ -206,7 +206,7 @@ def getroster(update: Update, context):
 
         # Process roster data for today
         now = datetime.datetime.now(INDIA_TZ)
-        target_date = now.strftime("%d/%m/%Y")  # 31/07/2025
+        target_date = now.strftime("%d/%m/%Y")  # Format: 31/07/2025
         outlet_groups = {}
 
         for row in roster:
@@ -216,11 +216,13 @@ def getroster(update: Update, context):
             emp_id = str(row.get("Employee ID", "")).strip()
             name = emp_id_to_name.get(emp_id, emp_id)  # Use employee name or fallback to ID
             outlet_code = str(row.get("Outlet", "")).strip()
-            if outlet_code.lower() == "wo":
-                continue  # Skip WO outlets
-            outlet_name = outlet_code_to_name.get(outlet_code.lower(), outlet_code)  # Get full outlet name
             shift_id = str(row.get("Shift", "")).strip()
-            shift_name = shift_id_to_name.get(shift_id, "")  # Map shift ID to shift name
+            shift_name = shift_id_to_name.get(shift_id, "Unknown")  # Map shift ID to shift name
+
+            if outlet_code.lower() == "wo":
+                outlet_name = "Weekly Off"
+            else:
+                outlet_name = outlet_code_to_name.get(outlet_code.lower(), outlet_code)
 
             if outlet_name not in outlet_groups:
                 outlet_groups[outlet_name] = []
@@ -233,17 +235,15 @@ def getroster(update: Update, context):
 
         # Build the message with code block formatting
         message = ["```"]
-        message.append(f"*Roster for Today ({target_date}):*")
+        message.append(f"Roster for Today ({target_date}):")
         message.append("")  # Empty line after header
-        
-        for outlet_name in sorted(outlet_groups.keys()):  # Sort outlets alphabetically
-            message.append(f"*Outlet: {outlet_name}*")
-            message.append("-" * (len(outlet_name) + 8))  # Underline for outlet name
-            for name, shift_name in sorted(outlet_groups[outlet_name]):  # Sort employees by name
+
+        for outlet_name in sorted(outlet_groups.keys()):
+            message.append(f"Outlet: {outlet_name}")
+            for name, shift_name in sorted(outlet_groups[outlet_name]):
                 message.append(f"{name} - {shift_name}")
             message.append("")  # Empty line between outlets
-        
-        # Remove last empty line and close code block
+
         if message[-1] == "":
             message.pop()
         message.append("```")
@@ -254,6 +254,7 @@ def getroster(update: Update, context):
     except Exception as e:
         update.message.reply_text(f"Error generating roster: {e}")
         print(f"Error sending roster: {e}")
+
 
 def get_phone_to_empid_map():
     creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
