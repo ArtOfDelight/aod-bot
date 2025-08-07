@@ -174,6 +174,9 @@ def statusyesterday(update: Update, context):
 
 def getroster(update: Update, context):
     try:
+        # List of fired employees to exclude
+        fired_employees = ["Mon", "Ruth", "Tongminthang", "Sameer", "jenny"]
+        
         # Fetch data from Google Sheet
         gc = gspread.authorize(ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE))
         roster_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_ROSTER)
@@ -215,6 +218,11 @@ def getroster(update: Update, context):
 
             emp_id = str(row.get("Employee ID", "")).strip()
             name = emp_id_to_name.get(emp_id, emp_id)  # Use employee name or fallback to ID
+            
+            # Skip fired employees
+            if name in fired_employees:
+                continue
+                
             outlet_code = str(row.get("Outlet", "")).strip()
             shift_id = str(row.get("Shift", "")).strip()
             shift_name = shift_id_to_name.get(shift_id, "Unknown")  # Map shift ID to shift name
@@ -239,7 +247,12 @@ def getroster(update: Update, context):
         message.append("")  # Empty line after header
 
         for outlet_name in sorted(outlet_groups.keys()):
-            message.append(f"Outlet: {outlet_name}")
+            # For Weekly Off, just show the outlet name without "Outlet:" prefix
+            if outlet_name == "Weekly Off":
+                message.append(f"{outlet_name}")
+            else:
+                message.append(f"{outlet_name}")
+            
             for name, shift_name in sorted(outlet_groups[outlet_name]):
                 message.append(f"{name} - {shift_name}")
             message.append("")  # Empty line between outlets
