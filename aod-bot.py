@@ -264,7 +264,7 @@ def getroster(update: Update, context):
         
         # Build the message with code block formatting
         message = ["```"]
-        message.append(f"Roster for {day_of_week} ({target_date}):")
+        message.append(f"*Roster for {day_of_week} ({target_date}):*")
         message.append("")  # Empty line after header
 
         for outlet_name in sorted(outlet_groups.keys()):
