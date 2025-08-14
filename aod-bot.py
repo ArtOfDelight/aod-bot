@@ -259,17 +259,17 @@ def getroster(update: Update, context):
             update.message.reply_text(f"No roster records found for the latest date ({target_date}).")
             return
 
+        # Get the day of the week for the latest date
+        day_of_week = latest_date_obj.strftime("%A")
+        
         # Build the message with code block formatting
         message = ["```"]
-        message.append(f"Roster for Latest Date ({target_date}):")
+        message.append(f"Roster for {day_of_week} ({target_date}):")
         message.append("")  # Empty line after header
 
         for outlet_name in sorted(outlet_groups.keys()):
-            # For Weekly Off, just show the outlet name without "Outlet:" prefix
-            if outlet_name == "Weekly Off":
-                message.append(f"{outlet_name}")
-            else:
-                message.append(f"{outlet_name}")
+            # Add ** around outlet names for emphasis
+            message.append(f"**{outlet_name}**")
             
             for name, shift_name in sorted(outlet_groups[outlet_name]):
                 # For Weekly Off only, show just the name without hyphens
