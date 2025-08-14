@@ -268,8 +268,8 @@ def getroster(update: Update, context):
         message.append("")  # Empty line after header
 
         for outlet_name in sorted(outlet_groups.keys()):
-            # Add ** around outlet names for emphasis
-            message.append(f"**{outlet_name}**")
+            # Add * around outlet names for emphasis
+            message.append(f"*{outlet_name}*")
             
             for name, shift_name in sorted(outlet_groups[outlet_name]):
                 # For Weekly Off only, show just the name without hyphens
