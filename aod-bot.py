@@ -254,7 +254,11 @@ def getroster(update: Update, context):
                 message.append(f"{outlet_name}")
             
             for name, shift_name in sorted(outlet_groups[outlet_name]):
-                message.append(f"{name} - {shift_name}")
+                # For Weekly Off only, show just the name without hyphens
+                if outlet_name == "Weekly Off":
+                    message.append(f"{name}")
+                else:
+                    message.append(f"{name} - {shift_name}")
             message.append("")  # Empty line between outlets
 
         if message[-1] == "":
