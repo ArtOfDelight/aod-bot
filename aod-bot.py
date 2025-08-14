@@ -207,9 +207,27 @@ def getroster(update: Update, context):
             for row in shift_records if row.get("Shift ID") and row.get("Shift Name")
         }
 
-        # Process roster data for today
-        now = datetime.datetime.now(INDIA_TZ)
-        target_date = now.strftime("%d/%m/%Y")  # Format: 31/07/2025
+        # Find the latest date in the roster data
+        all_dates = []
+        for row in roster:
+            date_str = str(row.get("Date", "")).strip()
+            if date_str:
+                try:
+                    # Parse the date and add to list
+                    date_obj = datetime.datetime.strptime(date_str, "%d/%m/%Y")
+                    all_dates.append((date_obj, date_str))
+                except ValueError:
+                    continue  # Skip invalid date formats
+        
+        if not all_dates:
+            update.message.reply_text("No valid dates found in roster data.")
+            return
+        
+        # Sort dates and get the latest one
+        all_dates.sort(key=lambda x: x[0])  # Sort by datetime object
+        latest_date_obj, target_date = all_dates[-1]  # Get the latest date
+        
+        # Process roster data for the latest date
         outlet_groups = {}
 
         for row in roster:
@@ -238,12 +256,12 @@ def getroster(update: Update, context):
 
         # If no records found
         if not outlet_groups:
-            update.message.reply_text(f"No roster records found for today ({target_date}).")
+            update.message.reply_text(f"No roster records found for the latest date ({target_date}).")
             return
 
         # Build the message with code block formatting
         message = ["```"]
-        message.append(f"Roster for Today ({target_date}):")
+        message.append(f"Roster for Latest Date ({target_date}):")
         message.append("")  # Empty line after header
 
         for outlet_name in sorted(outlet_groups.keys()):
@@ -266,7 +284,7 @@ def getroster(update: Update, context):
         message.append("```")
 
         update.message.reply_text("\n".join(message), parse_mode="Markdown")
-        print(f"Roster report sent for {target_date}")
+        print(f"Roster report sent for latest date: {target_date}")
 
     except Exception as e:
         update.message.reply_text(f"Error generating roster: {e}")
