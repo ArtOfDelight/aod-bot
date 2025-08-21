@@ -2,6 +2,10 @@ import os
 import re
 import math
 import datetime
+import uuid
+import hashlib
+import time
+from werkzeug.utils import secure_filename
 from zoneinfo import ZoneInfo
 from flask import Flask, request
 from telegram import (
@@ -14,6 +18,8 @@ from telegram.ext import (
 )
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
 import requests
 
 MANAGER_CHAT_ID = 1225343546  # Replace with the actual Telegram chat ID
@@ -31,19 +37,51 @@ TAB_NAME_ROSTER = "Roster"
 TAB_NAME_OUTLETS = "Outlets"
 TAB_NAME_EMP_REGISTER = "EmployeeRegister"
 TAB_NAME_SHIFTS = "Shifts"
+TAB_CHECKLIST = "ChecklistQuestions"
+TAB_RESPONSES = "ChecklistResponses"
+TAB_SUBMISSIONS = "ChecklistSubmissions"
 LOCATION_TOLERANCE_METERS = 50
+IMAGE_FOLDER = "checklist"
+DRIVE_FOLDER_ID = "0AEmGXk8Yd_pdUk9PVA"  # Replace with your Google Drive folder ID
 
 # === Flask + Telegram Setup ===
 app = Flask(__name__)
 bot = Bot(token=BOT_TOKEN)
 dispatcher = Dispatcher(bot, None, workers=4)
 
+# === Global Google Sheets Client ===
+try:
+    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
+    client = gspread.authorize(creds)
+    print("Google Sheets client initialized successfully")
+except Exception as e:
+    print(f"Failed to initialize Google Sheets client: {e}")
+    raise
+
+# === Google Drive Setup ===
+def setup_drive():
+    try:
+        gauth = GoogleAuth()
+        gauth.credentials = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
+        return GoogleDrive(gauth)
+    except Exception as e:
+        print(f"Failed to setup Google Drive: {e}")
+        raise
+
+drive = setup_drive()
+
 # === States ===
 ASK_ACTION, ASK_PHONE, ASK_LOCATION = range(3)
+CHECKLIST_ASK_CONTACT, CHECKLIST_ASK_SLOT, CHECKLIST_ASK_QUESTION, CHECKLIST_ASK_IMAGE = range(10, 14)
 
 # === Utility Functions ===
 def normalize_number(number):
     return re.sub(r"\D", "", number)[-10:]
+
+def sanitize_filename(name):
+    if not name:
+        return "unknown"
+    return re.sub(r"[^a-zA-Z0-9_/\\.]", "", name.replace(" ", "_"))
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371000
@@ -290,7 +328,6 @@ def getroster(update: Update, context):
         update.message.reply_text(f"Error generating roster: {e}")
         print(f"Error sending roster: {e}")
 
-
 def get_phone_to_empid_map():
     creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
     sheet = gspread.authorize(creds).open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
@@ -336,12 +373,111 @@ def update_sheet(sheet, row, column_name, timestamp):
     col_index = sheet.row_values(1).index(column_name) + 1
     sheet.update_cell(row, col_index, timestamp)
 
+def get_employee_info(phone):
+    try:
+        phone = normalize_number(phone)
+        emp_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
+        emp_records = emp_sheet.get_all_records()
+        today = datetime.datetime.now(INDIA_TZ).strftime("%d/%m/%Y")
+        for row in emp_records:
+            row_phone = normalize_number(str(row.get("Phone Number", "")))
+            if row_phone == phone:
+                emp_name = sanitize_filename(str(row.get("Full Name", "Unknown")))
+                emp_id = str(row.get("Employee ID", ""))
+                roster_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_ROSTER)
+                roster_records = roster_sheet.get_all_records()
+                for record in roster_records:
+                    if record.get("Employee ID") == emp_id and record.get("Date") == today:
+                        outlet_code = record.get("Outlet")
+                        # Validate outlet code exists in Outlets sheet
+                        outlets_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_OUTLETS)
+                        outlets_records = outlets_sheet.get_all_records()
+                        if not any(str(row.get("Outlet Code")).strip().upper() == outlet_code.upper() for row in outlets_records):
+                            bot.send_message(chat_id=MANAGER_CHAT_ID, text=f"Invalid outlet code {outlet_code} in Roster for {emp_name}")
+                            return "Unknown", ""
+                        return emp_name, outlet_code
+        return "Unknown", ""
+    except Exception as e:
+        print(f"Failed to fetch employee info: {e}")
+        return "Unknown", ""
+
+def get_applicable_checklist_for_outlet(outlet_code):
+    """Get the Applicable Checklist for a given outlet code from Outlets tab"""
+    try:
+        sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_OUTLETS)
+        records = sheet.get_all_records()
+        for row in records:
+            if str(row.get("Outlet Code")).strip().upper() == outlet_code.strip().upper():
+                applicable_checklist = str(row.get("Applicable Checklist", "")).strip()
+                if not applicable_checklist:
+                    print(f"No Applicable Checklist for outlet code {outlet_code}, using default 'Generic'")
+                    return "Generic"
+                print(f"Found applicable checklist '{applicable_checklist}' for outlet code '{outlet_code}'")
+                return applicable_checklist
+        print(f"No matching outlet code {outlet_code} in Outlets, using default 'Generic'")
+        bot.send_message(chat_id=MANAGER_CHAT_ID, text=f"No matching outlet code {outlet_code} in Outlets sheet")
+        return "Generic"
+    except Exception as e:
+        print(f"Failed to fetch applicable checklist for outlet {outlet_code}: {e}")
+        return "Generic"
+
+def get_filtered_questions(outlet_code, slot):
+    """Get questions filtered by applicable checklist and time slot with retry logic"""
+    try:
+        applicable_checklist = get_applicable_checklist_for_outlet(outlet_code)
+        print(f"Fetching questions for outlet {outlet_code}, checklist '{applicable_checklist}', slot '{slot}'")
+        sheet = client.open(SHEET_NAME).worksheet(TAB_CHECKLIST)
+        records = sheet.get_all_records()
+        filtered_questions = []
+        for row in records:
+            row_checklist = str(row.get("Applicable Checklist", "")).strip()
+            row_slot = str(row.get("Time_Slot", "")).strip()
+            if (row_checklist.upper() == applicable_checklist.upper() and 
+                row_slot.upper() == slot.strip().upper()):
+                question_text = row.get("Question_Text", "").strip()
+                if not question_text:
+                    print(f"Empty Question_Text in ChecklistQuestions for checklist {row_checklist}, slot {row_slot}")
+                    continue
+                filtered_questions.append({
+                    "question": question_text,
+                    "image_required": str(row.get("Image Required", "")).strip().lower() == "yes"
+                })
+        print(f"Found {len(filtered_questions)} questions for checklist '{applicable_checklist}', slot '{slot}'")
+        if not filtered_questions:
+            print(f"No questions found for checklist '{applicable_checklist}', slot '{slot}'")
+        return filtered_questions
+    except Exception as e:
+        print(f"Failed to fetch questions: {e}. Retrying once...")
+        time.sleep(1)  # Brief delay before retry
+        try:
+            sheet = client.open(SHEET_NAME).worksheet(TAB_CHECKLIST)
+            records = sheet.get_all_records()
+            filtered_questions = []
+            for row in records:
+                row_checklist = str(row.get("Applicable Checklist", "")).strip()
+                row_slot = str(row.get("Time_Slot", "")).strip()
+                if (row_checklist.upper() == applicable_checklist.upper() and 
+                    row_slot.upper() == slot.strip().upper()):
+                    question_text = row.get("Question_Text", "").strip()
+                    if not question_text:
+                        continue
+                    filtered_questions.append({
+                        "question": question_text,
+                        "image_required": str(row.get("Image Required", "")).strip().lower() == "yes"
+                    })
+            print(f"Retry successful: Found {len(filtered_questions)} questions")
+            return filtered_questions
+        except Exception as e2:
+            print(f"Retry failed: {e2}")
+            return []
+
 # === Bot Handlers ===
 def start(update: Update, context):
     print(f"Start command received from user: {update.message.from_user.id}, chat: {update.message.chat_id}")  # Debug log
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("🟢 Sign In", callback_data="signin")],
-        [InlineKeyboardButton("🔴 Sign Out", callback_data="signout")]
+        [InlineKeyboardButton("🔴 Sign Out", callback_data="signout")],
+        [InlineKeyboardButton("📋 Fill Checklist", callback_data="checklist")]
     ])
     update.message.reply_text("Welcome! What would you like to do today?", reply_markup=buttons)
     return ASK_ACTION
@@ -349,6 +485,11 @@ def start(update: Update, context):
 def action_selected(update: Update, context):
     query = update.callback_query
     query.answer()
+    if query.data == "checklist":
+        contact_button = KeyboardButton("📱 Send Phone Number", request_contact=True)
+        markup = ReplyKeyboardMarkup([[contact_button]], one_time_keyboard=True, resize_keyboard=True)
+        query.message.reply_text("Please verify your phone number for the checklist:", reply_markup=markup)
+        return CHECKLIST_ASK_CONTACT
     context.user_data["action"] = query.data
     contact_button = KeyboardButton("📱 Send Phone Number", request_contact=True)
     markup = ReplyKeyboardMarkup([[contact_button]], one_time_keyboard=True, resize_keyboard=True)
@@ -431,6 +572,205 @@ def handle_location(update: Update, context):
     )
     return ConversationHandler.END
 
+def cl_handle_contact(update: Update, context):
+    print("Handling checklist contact verification")
+    if not update.message.contact:
+        print("No contact received")
+        update.message.reply_text("❌ Please use the button to send your contact.")
+        return CHECKLIST_ASK_CONTACT
+    phone = normalize_number(update.message.contact.phone_number)
+    emp_name, outlet_code = get_employee_info(phone)
+    if emp_name == "Unknown" or not outlet_code:
+        print(f"Invalid employee info for phone {phone}")
+        update.message.reply_text("❌ You're not rostered today or not registered.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    context.user_data.update({"emp_name": emp_name, "outlet": outlet_code})
+    print(f"Contact verified: emp_name={emp_name}, outlet_code={outlet_code}")
+    update.message.reply_text("⏰ Select time slot:",
+                             reply_markup=ReplyKeyboardMarkup([["Morning", "Mid Day", "Closing"]], one_time_keyboard=True, resize_keyboard=True))
+    return CHECKLIST_ASK_SLOT
+
+def cl_load_questions(update: Update, context):
+    print("Loading checklist questions for selected slot")
+    slot = update.message.text
+    if slot not in ["Morning", "Mid Day", "Closing"]:
+        print(f"Invalid slot selected: {slot}")
+        update.message.reply_text("❌ Invalid time slot. Please select Morning, Mid Day, or Closing.")
+        return CHECKLIST_ASK_SLOT
+    context.user_data["slot"] = slot
+    context.user_data["submission_id"] = str(uuid.uuid4())[:8]
+    context.user_data["timestamp"] = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    context.user_data["date"] = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d")
+    questions = get_filtered_questions(context.user_data["outlet"], context.user_data["slot"])
+    if not questions:
+        print(f"No questions found for outlet {context.user_data['outlet']}, slot {slot}")
+        update.message.reply_text("❌ No checklist questions found for this outlet and time slot.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    context.user_data.update({"questions": questions, "answers": [], "current_q": 0})
+    print(f"Loaded {len(questions)} questions for outlet {context.user_data['outlet']}, slot {slot}")
+    return cl_ask_next_question(update, context)
+
+def cl_ask_next_question(update: Update, context):
+    print(f"Asking checklist question {context.user_data['current_q'] + 1}")
+    idx = context.user_data["current_q"]
+    if idx >= len(context.user_data["questions"]):
+        print("All checklist questions completed, saving responses")
+        # Batch save all responses to ChecklistResponses
+        try:
+            responses_sheet = client.open(SHEET_NAME).worksheet(TAB_RESPONSES)
+            for answer in context.user_data["answers"]:
+                responses_sheet.append_row([
+                    context.user_data["submission_id"],
+                    answer["question"],
+                    answer["answer"],
+                    answer.get("image_link", ""),
+                    answer.get("image_hash", "")
+                ])
+            print(f"Saved {len(context.user_data['answers'])} responses to ChecklistResponses")
+        except Exception as e:
+            print(f"Failed to batch save responses: {e}")
+            update.message.reply_text("❌ Error saving checklist responses. Please contact admin.", reply_markup=ReplyKeyboardRemove())
+            return ConversationHandler.END
+        update.message.reply_text("✅ Checklist completed successfully.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    q_data = context.user_data["questions"][idx]
+    if q_data["image_required"]:
+        update.message.reply_text(f"📷 {q_data['question']}\n\nPlease upload an image for this step.", 
+                                 reply_markup=ReplyKeyboardRemove())
+        context.user_data.setdefault("answers", []).append({
+            "question": q_data["question"], 
+            "answer": "Image Required", 
+            "image_link": "",
+            "image_hash": ""
+        })
+        return CHECKLIST_ASK_IMAGE
+    else:
+        update.message.reply_text(f"❓ {q_data['question']}",
+                                 reply_markup=ReplyKeyboardMarkup([["Yes", "No"]], one_time_keyboard=True, resize_keyboard=True))
+        return CHECKLIST_ASK_QUESTION
+
+def cl_handle_answer(update: Update, context):
+    print("Handling checklist answer")
+    ans = update.message.text
+    if ans not in ["Yes", "No"]:
+        print(f"Invalid answer: {ans}")
+        update.message.reply_text("❌ Please answer with Yes or No.")
+        return CHECKLIST_ASK_QUESTION
+    q_data = context.user_data["questions"][context.user_data["current_q"]]
+    context.user_data["answers"].append({
+        "question": q_data["question"],
+        "answer": ans,
+        "image_link": "",
+        "image_hash": ""
+    })
+    context.user_data["current_q"] += 1
+    return cl_ask_next_question(update, context)
+
+def cl_handle_image_upload(update: Update, context):
+    print("Processing checklist image upload")
+    if not update.message.photo:
+        print("No photo received")
+        update.message.reply_text("❌ Please upload a photo.")
+        return CHECKLIST_ASK_IMAGE
+    try:
+        photo = update.message.photo[-1]
+        file = photo.get_file()
+        emp_name = context.user_data.get("emp_name", "User")
+        q_num = context.user_data["current_q"] + 1
+        current_date = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d")
+        filename = f"checklist/{emp_name}_Q{q_num}_{current_date}.jpg"
+        local_path = os.path.join(IMAGE_FOLDER, secure_filename(f"{emp_name}_Q{q_num}_{current_date}.jpg"))
+        print(f"Downloading photo to {local_path}")
+        file.download(custom_path=local_path)
+        # Compute image hash
+        hash_md5 = hashlib.md5()
+        with open(local_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        image_hash = hash_md5.hexdigest()
+        print(f"Image hash: {image_hash}")
+        # Check for duplicates
+        submissions_sheet = client.open(SHEET_NAME).worksheet(TAB_SUBMISSIONS)
+        records = submissions_sheet.get_all_records()
+        for record in records:
+            if (
+                record.get("Date") == context.user_data["date"] and
+                record.get("Time Slot") == context.user_data["slot"] and
+                record.get("Outlet") == context.user_data["outlet"] and
+                record.get("Submitted By") == context.user_data["emp_name"].replace("_", " ") and
+                record.get("Imagecode") == image_hash
+            ):
+                print(f"Duplicate image detected: {image_hash}")
+                update.message.reply_text("❌ Duplicate image detected. Please retake the photo.")
+                return CHECKLIST_ASK_IMAGE
+        # Upload to Google Drive
+        print(f"Uploading image to Google Drive: {filename}")
+        gfile = drive.CreateFile({
+            'title': filename,
+            'parents': [{'id': DRIVE_FOLDER_ID}],
+            'supportsAllDrives': True
+        })
+        gfile.SetContentFile(local_path)
+        gfile.Upload(param={'supportsAllDrives': True})
+        # Update answer with image link and hash
+        context.user_data["answers"][-1]["image_link"] = filename
+        context.user_data["answers"][-1]["image_hash"] = image_hash
+        # Save to ChecklistSubmissions
+        submissions_sheet.append_row([
+            context.user_data["submission_id"],
+            context.user_data["date"],
+            context.user_data["slot"],
+            context.user_data["outlet"],
+            context.user_data["emp_name"].replace("_", " "),
+            context.user_data["timestamp"]
+        ])
+        update.message.reply_text("✅ Image uploaded successfully.")
+    except Exception as e:
+        print(f"Image upload failed: {e}. Retrying once...")
+        time.sleep(1)
+        try:
+            file.download(custom_path=local_path)
+            hash_md5 = hashlib.md5()
+            with open(local_path, "rb") as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hash_md5.update(chunk)
+            image_hash = hash_md5.hexdigest()
+            records = submissions_sheet.get_all_records()
+            for record in records:
+                if (
+                    record.get("Date") == context.user_data["date"] and
+                    record.get("Time Slot") == context.user_data["slot"] and
+                    record.get("Outlet") == context.user_data["outlet"] and
+                    record.get("Submitted By") == context.user_data["emp_name"].replace("_", " ") and
+                    record.get("Imagecode") == image_hash
+                ):
+                    update.message.reply_text("❌ Duplicate image detected.")
+                    return CHECKLIST_ASK_IMAGE
+            gfile = drive.CreateFile({
+                'title': filename,
+                'parents': [{'id': DRIVE_FOLDER_ID}],
+                'supportsAllDrives': True
+            })
+            gfile.SetContentFile(local_path)
+            gfile.Upload(param={'supportsAllDrives': True})
+            context.user_data["answers"][-1]["image_link"] = filename
+            context.user_data["answers"][-1]["image_hash"] = image_hash
+            submissions_sheet.append_row([
+                context.user_data["submission_id"],
+                context.user_data["date"],
+                context.user_data["slot"],
+                context.user_data["outlet"],
+                context.user_data["emp_name"].replace("_", " "),
+                context.user_data["timestamp"]
+            ])
+            update.message.reply_text("✅ Image uploaded successfully (retry).")
+        except Exception as e2:
+            print(f"Retry failed: {e2}")
+            update.message.reply_text("❌ Error uploading image. Please try again.")
+            return CHECKLIST_ASK_IMAGE
+    context.user_data["current_q"] += 1
+    return cl_ask_next_question(update, context)
+
 def cancel(update: Update, context):
     update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
@@ -454,6 +794,10 @@ def setup_dispatcher():
             ASK_ACTION: [CallbackQueryHandler(action_selected)],
             ASK_PHONE: [MessageHandler(Filters.contact, handle_phone)],
             ASK_LOCATION: [MessageHandler(Filters.location, handle_location)],
+            CHECKLIST_ASK_CONTACT: [MessageHandler(Filters.contact, cl_handle_contact)],
+            CHECKLIST_ASK_SLOT: [MessageHandler(Filters.text & ~Filters.command, cl_load_questions)],
+            CHECKLIST_ASK_QUESTION: [MessageHandler(Filters.text & ~Filters.command, cl_handle_answer)],
+            CHECKLIST_ASK_IMAGE: [MessageHandler(Filters.photo, cl_handle_image_upload)]
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
