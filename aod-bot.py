@@ -690,7 +690,6 @@ def cl_handle_image_upload(update: Update, context):
         q_num = context.user_data["current_q"] + 1
         current_date = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d")
         filename = f"checklist/{emp_name}_Q{q_num}_{current_date}.jpg"
-        # Use /tmp for temporary storage (writable on Render and local)
         local_path = os.path.join("/tmp", secure_filename(f"{emp_name}_Q{q_num}_{current_date}.jpg"))
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         file.download(custom_path=local_path)
@@ -716,20 +715,25 @@ def cl_handle_image_upload(update: Update, context):
                 update.message.reply_text("❌ Duplicate image detected. Please retake the photo.")
                 os.remove(local_path)
                 return CHECKLIST_ASK_IMAGE
-        # Upload to Google Drive
-        try:
-            gfile = drive.CreateFile({
-                'title': filename,
-                'parents': [{'id': DRIVE_FOLDER_ID}],
-                'supportsAllDrives': True
-            })
-            gfile.SetContentFile(local_path)
-            gfile.Upload(param={'supportsAllDrives': True})
-            image_link = filename
-        except Exception as drive_err:
-            image_link = f"local_only_{filename}"  # Fallback to local reference
-        # Update answer with image link and hash
-        context.user_data["answers"][-1]["image_link"] = image_link
+        # Upload to Google Drive and get URL
+        gfile = drive.CreateFile({
+            'title': filename,
+            'parents': [{'id': DRIVE_FOLDER_ID}],
+            'supportsAllDrives': True
+        })
+        gfile.SetContentFile(local_path)
+        gfile.Upload(param={'supportsAllDrives': True})
+        gfile.InsertPermission({
+            'type': 'anyone',
+            'value': 'anyone',
+            'role': 'reader'
+        })
+        image_url = gfile['alternateLink']  # Shareable URL
+        if not image_url:
+            raise Exception("Failed to retrieve Google Drive URL")
+        print(f"Debug: Image URL set to {image_url}")  # Temporary debug
+        # Update answer with image URL and hash
+        context.user_data["answers"][-1]["image_link"] = image_url
         context.user_data["answers"][-1]["image_hash"] = image_hash
         # Save to ChecklistSubmissions
         submissions_sheet.append_row([
@@ -743,7 +747,7 @@ def cl_handle_image_upload(update: Update, context):
         update.message.reply_text("✅ Image uploaded successfully.")
         os.remove(local_path)  # Clean up temporary file
     except Exception as e:
-        time.sleep(1)
+        time.sleep(1)  # Brief delay before retry
         try:
             file.download(custom_path=local_path)
             if not os.path.exists(local_path):
@@ -765,18 +769,23 @@ def cl_handle_image_upload(update: Update, context):
                     update.message.reply_text("❌ Duplicate image detected.")
                     os.remove(local_path)
                     return CHECKLIST_ASK_IMAGE
-            try:
-                gfile = drive.CreateFile({
-                    'title': filename,
-                    'parents': [{'id': DRIVE_FOLDER_ID}],
-                    'supportsAllDrives': True
-                })
-                gfile.SetContentFile(local_path)
-                gfile.Upload(param={'supportsAllDrives': True})
-                image_link = filename
-            except Exception as drive_err:
-                image_link = f"local_only_{filename}"
-            context.user_data["answers"][-1]["image_link"] = image_link
+            gfile = drive.CreateFile({
+                'title': filename,
+                'parents': [{'id': DRIVE_FOLDER_ID}],
+                'supportsAllDrives': True
+            })
+            gfile.SetContentFile(local_path)
+            gfile.Upload(param={'supportsAllDrives': True})
+            gfile.InsertPermission({
+                'type': 'anyone',
+                'value': 'anyone',
+                'role': 'reader'
+            })
+            image_url = gfile['alternateLink']
+            if not image_url:
+                raise Exception("Failed to retrieve Google Drive URL on retry")
+            print(f"Debug: Retry Image URL set to {image_url}")  # Temporary debug
+            context.user_data["answers"][-1]["image_link"] = image_url
             context.user_data["answers"][-1]["image_hash"] = image_hash
             submissions_sheet.append_row([
                 context.user_data["submission_id"],
@@ -788,8 +797,8 @@ def cl_handle_image_upload(update: Update, context):
             ])
             update.message.reply_text("✅ Image uploaded successfully (retry).")
             os.remove(local_path)
-        except Exception as e2:
-            update.message.reply_text("❌ Error uploading image. Please try again.")
+        except Exception:
+            update.message.reply_text("❌ Error uploading image. Please try again. Contact admin if issue persists.")
             if os.path.exists(local_path):
                 os.remove(local_path)
             return CHECKLIST_ASK_IMAGE
