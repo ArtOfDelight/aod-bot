@@ -22,6 +22,7 @@ from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
 import requests
 
+
 MANAGER_CHAT_ID = 1225343546  # Replace with the actual Telegram chat ID
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
 
@@ -667,9 +668,7 @@ def cl_handle_answer(update: Update, context):
     return cl_ask_next_question(update, context)
 
 def cl_handle_image_upload(update: Update, context):
-    print("Processing checklist image upload")
     if not update.message.photo:
-        print("No photo received")
         update.message.reply_text("❌ Please upload a photo.")
         return CHECKLIST_ASK_IMAGE
     try:
@@ -679,16 +678,18 @@ def cl_handle_image_upload(update: Update, context):
         q_num = context.user_data["current_q"] + 1
         current_date = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d")
         filename = f"checklist/{emp_name}_Q{q_num}_{current_date}.jpg"
-        local_path = os.path.join(IMAGE_FOLDER, secure_filename(f"{emp_name}_Q{q_num}_{current_date}.jpg"))
-        print(f"Downloading photo to {local_path}")
+        # Use /tmp for temporary storage (writable on Render and local)
+        local_path = os.path.join("/tmp", secure_filename(f"{emp_name}_Q{q_num}_{current_date}.jpg"))
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
         file.download(custom_path=local_path)
+        if not os.path.exists(local_path):
+            raise Exception(f"File download failed: File not created at {local_path}")
         # Compute image hash
         hash_md5 = hashlib.md5()
         with open(local_path, "rb") as f:
             for chunk in iter(lambda: f.read(4096), b""):
                 hash_md5.update(chunk)
         image_hash = hash_md5.hexdigest()
-        print(f"Image hash: {image_hash}")
         # Check for duplicates
         submissions_sheet = client.open(SHEET_NAME).worksheet(TAB_SUBMISSIONS)
         records = submissions_sheet.get_all_records()
@@ -700,20 +701,23 @@ def cl_handle_image_upload(update: Update, context):
                 record.get("Submitted By") == context.user_data["emp_name"].replace("_", " ") and
                 record.get("Imagecode") == image_hash
             ):
-                print(f"Duplicate image detected: {image_hash}")
                 update.message.reply_text("❌ Duplicate image detected. Please retake the photo.")
+                os.remove(local_path)
                 return CHECKLIST_ASK_IMAGE
         # Upload to Google Drive
-        print(f"Uploading image to Google Drive: {filename}")
-        gfile = drive.CreateFile({
-            'title': filename,
-            'parents': [{'id': DRIVE_FOLDER_ID}],
-            'supportsAllDrives': True
-        })
-        gfile.SetContentFile(local_path)
-        gfile.Upload(param={'supportsAllDrives': True})
+        try:
+            gfile = drive.CreateFile({
+                'title': filename,
+                'parents': [{'id': DRIVE_FOLDER_ID}],
+                'supportsAllDrives': True
+            })
+            gfile.SetContentFile(local_path)
+            gfile.Upload(param={'supportsAllDrives': True})
+            image_link = filename
+        except Exception as drive_err:
+            image_link = f"local_only_{filename}"  # Fallback to local reference
         # Update answer with image link and hash
-        context.user_data["answers"][-1]["image_link"] = filename
+        context.user_data["answers"][-1]["image_link"] = image_link
         context.user_data["answers"][-1]["image_hash"] = image_hash
         # Save to ChecklistSubmissions
         submissions_sheet.append_row([
@@ -725,11 +729,13 @@ def cl_handle_image_upload(update: Update, context):
             context.user_data["timestamp"]
         ])
         update.message.reply_text("✅ Image uploaded successfully.")
+        os.remove(local_path)  # Clean up temporary file
     except Exception as e:
-        print(f"Image upload failed: {e}. Retrying once...")
         time.sleep(1)
         try:
             file.download(custom_path=local_path)
+            if not os.path.exists(local_path):
+                raise Exception(f"Retry file download failed: File not created at {local_path}")
             hash_md5 = hashlib.md5()
             with open(local_path, "rb") as f:
                 for chunk in iter(lambda: f.read(4096), b""):
@@ -745,15 +751,20 @@ def cl_handle_image_upload(update: Update, context):
                     record.get("Imagecode") == image_hash
                 ):
                     update.message.reply_text("❌ Duplicate image detected.")
+                    os.remove(local_path)
                     return CHECKLIST_ASK_IMAGE
-            gfile = drive.CreateFile({
-                'title': filename,
-                'parents': [{'id': DRIVE_FOLDER_ID}],
-                'supportsAllDrives': True
-            })
-            gfile.SetContentFile(local_path)
-            gfile.Upload(param={'supportsAllDrives': True})
-            context.user_data["answers"][-1]["image_link"] = filename
+            try:
+                gfile = drive.CreateFile({
+                    'title': filename,
+                    'parents': [{'id': DRIVE_FOLDER_ID}],
+                    'supportsAllDrives': True
+                })
+                gfile.SetContentFile(local_path)
+                gfile.Upload(param={'supportsAllDrives': True})
+                image_link = filename
+            except Exception as drive_err:
+                image_link = f"local_only_{filename}"
+            context.user_data["answers"][-1]["image_link"] = image_link
             context.user_data["answers"][-1]["image_hash"] = image_hash
             submissions_sheet.append_row([
                 context.user_data["submission_id"],
@@ -764,9 +775,11 @@ def cl_handle_image_upload(update: Update, context):
                 context.user_data["timestamp"]
             ])
             update.message.reply_text("✅ Image uploaded successfully (retry).")
+            os.remove(local_path)
         except Exception as e2:
-            print(f"Retry failed: {e2}")
             update.message.reply_text("❌ Error uploading image. Please try again.")
+            if os.path.exists(local_path):
+                os.remove(local_path)
             return CHECKLIST_ASK_IMAGE
     context.user_data["current_q"] += 1
     return cl_ask_next_question(update, context)
