@@ -423,42 +423,56 @@ def get_applicable_checklist_for_outlet(outlet_code):
         return "Generic"
 
 def get_filtered_questions(outlet_code, slot):
-    """Get questions filtered by applicable checklist and time slot with retry logic"""
+    """Get questions filtered by outlet-specific 'Yes' values from Applicable Checklist and time slot with retry logic"""
     try:
-        applicable_checklist = get_applicable_checklist_for_outlet(outlet_code)
-        print(f"Fetching questions for outlet {outlet_code}, checklist '{applicable_checklist}', slot '{slot}'")
+        # Get the applicable checklist from Outlets tab
+        outlets_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_OUTLETS)
+        outlets_records = outlets_sheet.get_all_records()
+        applicable_checklist = None
+        for row in outlets_records:
+            if str(row.get("Outlet Code", "")).strip().lower() == outlet_code.lower():
+                applicable_checklist = str(row.get("Applicable Checklist", "")).strip()
+                break
+        if not applicable_checklist:
+            return []
+
         sheet = client.open(SHEET_NAME).worksheet(TAB_CHECKLIST)
         records = sheet.get_all_records()
         filtered_questions = []
+
         for row in records:
-            row_checklist = str(row.get("Applicable Checklist", "")).strip()
             row_slot = str(row.get("Time_Slot", "")).strip()
-            if (row_checklist.upper() == applicable_checklist.upper() and 
-                row_slot.upper() == slot.strip().upper()):
+            outlet_value = str(row.get(applicable_checklist, "")).strip().lower()
+            if (row_slot.upper() == slot.strip().upper() and outlet_value == "yes"):
                 question_text = row.get("Question_Text", "").strip()
                 if not question_text:
-                    print(f"Empty Question_Text in ChecklistQuestions for checklist {row_checklist}, slot {row_slot}")
                     continue
                 filtered_questions.append({
                     "question": question_text,
                     "image_required": str(row.get("Image Required", "")).strip().lower() == "yes"
                 })
-        print(f"Found {len(filtered_questions)} questions for checklist '{applicable_checklist}', slot '{slot}'")
         if not filtered_questions:
-            print(f"No questions found for checklist '{applicable_checklist}', slot '{slot}'")
+            return []
         return filtered_questions
     except Exception as e:
-        print(f"Failed to fetch questions: {e}. Retrying once...")
         time.sleep(1)  # Brief delay before retry
         try:
+            outlets_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_OUTLETS)
+            outlets_records = outlets_sheet.get_all_records()
+            applicable_checklist = None
+            for row in outlets_records:
+                if str(row.get("Outlet Code", "")).strip().lower() == outlet_code.lower():
+                    applicable_checklist = str(row.get("Applicable Checklist", "")).strip()
+                    break
+            if not applicable_checklist:
+                return []
             sheet = client.open(SHEET_NAME).worksheet(TAB_CHECKLIST)
             records = sheet.get_all_records()
             filtered_questions = []
             for row in records:
-                row_checklist = str(row.get("Applicable Checklist", "")).strip()
                 row_slot = str(row.get("Time_Slot", "")).strip()
-                if (row_checklist.upper() == applicable_checklist.upper() and 
-                    row_slot.upper() == slot.strip().upper()):
+                outlet_value = str(row.get(applicable_checklist, "")).strip().lower()
+                if (row_slot.upper() == slot.strip().upper() and outlet_value == "yes"):
                     question_text = row.get("Question_Text", "").strip()
                     if not question_text:
                         continue
@@ -466,10 +480,8 @@ def get_filtered_questions(outlet_code, slot):
                         "question": question_text,
                         "image_required": str(row.get("Image Required", "")).strip().lower() == "yes"
                     })
-            print(f"Retry successful: Found {len(filtered_questions)} questions")
             return filtered_questions
-        except Exception as e2:
-            print(f"Retry failed: {e2}")
+        except Exception:
             return []
 
 # === Bot Handlers ===
