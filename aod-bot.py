@@ -683,81 +683,78 @@ def cl_handle_image_upload(update: Update, context):
     if not update.message.photo:
         update.message.reply_text("❌ Please upload a photo.")
         return CHECKLIST_ASK_IMAGE
+    
     try:
+        # Step 1: Get photo and file info
         photo = update.message.photo[-1]
-        file = photo.get_file()
+        print(f"Photo file_id: {photo.file_id}, file_size: {photo.file_size}")
+        
+        # Step 2: Download file with error handling
+        try:
+            file = photo.get_file()
+            print(f"File path: {file.file_path}, file_size: {file.file_size}")
+        except Exception as e:
+            print(f"Error getting file info: {e}")
+            update.message.reply_text("❌ Error accessing image file. Please try uploading again.")
+            return CHECKLIST_ASK_IMAGE
+        
+        # Step 3: Prepare file paths and names
         emp_name = context.user_data.get("emp_name", "User")
         q_num = context.user_data["current_q"] + 1
         current_date = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d")
-        filename = f"checklist/{emp_name}_Q{q_num}_{current_date}.jpg"
-        local_path = os.path.join("/tmp", secure_filename(f"{emp_name}_Q{q_num}_{current_date}.jpg"))
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        file.download(custom_path=local_path)
-        if not os.path.exists(local_path):
-            raise Exception(f"File download failed: File not created at {local_path}")
-        # Compute image hash
-        hash_md5 = hashlib.md5()
-        with open(local_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                hash_md5.update(chunk)
-        image_hash = hash_md5.hexdigest()
-        # Check for duplicates
-        submissions_sheet = client.open(SHEET_NAME).worksheet(TAB_SUBMISSIONS)
-        records = submissions_sheet.get_all_records()
-        for record in records:
-            if (
-                record.get("Date") == context.user_data["date"] and
-                record.get("Time Slot") == context.user_data["slot"] and
-                record.get("Outlet") == context.user_data["outlet"] and
-                record.get("Submitted By") == context.user_data["emp_name"].replace("_", " ") and
-                record.get("Imagecode") == image_hash
-            ):
-                update.message.reply_text("❌ Duplicate image detected. Please retake the photo.")
-                os.remove(local_path)
-                return CHECKLIST_ASK_IMAGE
-        # Upload to Google Drive and get URL
-        gfile = drive.CreateFile({
-            'title': filename,
-            'parents': [{'id': DRIVE_FOLDER_ID}],
-            'supportsAllDrives': True
-        })
-        gfile.SetContentFile(local_path)
-        gfile.Upload(param={'supportsAllDrives': True})
-        gfile.InsertPermission({
-            'type': 'anyone',
-            'value': 'anyone',
-            'role': 'reader'
-        })
-        image_url = gfile['alternateLink']  # Shareable URL
-        if not image_url:
-            raise Exception("Failed to retrieve Google Drive URL")
-        print(f"Debug: Image URL set to {image_url}")  # Temporary debug
-        # Update answer with image URL and hash
-        context.user_data["answers"][-1]["image_link"] = image_url
-        context.user_data["answers"][-1]["image_hash"] = image_hash
-        # Save to ChecklistSubmissions
-        submissions_sheet.append_row([
-            context.user_data["submission_id"],
-            context.user_data["date"],
-            context.user_data["slot"],
-            context.user_data["outlet"],
-            context.user_data["emp_name"].replace("_", " "),
-            context.user_data["timestamp"]
-        ])
-        update.message.reply_text("✅ Image uploaded successfully.")
-        os.remove(local_path)  # Clean up temporary file
-    except Exception as e:
-        time.sleep(1)  # Brief delay before retry
+        timestamp_suffix = int(time.time())  # Add timestamp to avoid conflicts
+        
+        # Clean filename
+        safe_emp_name = sanitize_filename(emp_name)
+        filename = f"checklist/{safe_emp_name}_Q{q_num}_{current_date}_{timestamp_suffix}.jpg"
+        local_filename = f"{safe_emp_name}_Q{q_num}_{current_date}_{timestamp_suffix}.jpg"
+        local_path = os.path.join("/tmp", local_filename)
+        
+        print(f"Downloading to: {local_path}")
+        
+        # Step 4: Ensure directory exists
+        os.makedirs("/tmp", exist_ok=True)
+        
+        # Step 5: Download file with retry logic
+        download_success = False
+        for attempt in range(3):  # Try 3 times
+            try:
+                file.download(custom_path=local_path)
+                if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                    print(f"Download successful on attempt {attempt + 1}. File size: {os.path.getsize(local_path)} bytes")
+                    download_success = True
+                    break
+                else:
+                    print(f"Download attempt {attempt + 1} failed: File not created or empty")
+                    time.sleep(1)
+            except Exception as e:
+                print(f"Download attempt {attempt + 1} failed with error: {e}")
+                time.sleep(1)
+        
+        if not download_success:
+            update.message.reply_text("❌ Failed to download image after multiple attempts. Please try again.")
+            return CHECKLIST_ASK_IMAGE
+        
+        # Step 6: Compute image hash
         try:
-            file.download(custom_path=local_path)
-            if not os.path.exists(local_path):
-                raise Exception(f"Retry file download failed: File not created at {local_path}")
             hash_md5 = hashlib.md5()
             with open(local_path, "rb") as f:
                 for chunk in iter(lambda: f.read(4096), b""):
                     hash_md5.update(chunk)
             image_hash = hash_md5.hexdigest()
+            print(f"Image hash computed: {image_hash}")
+        except Exception as e:
+            print(f"Error computing hash: {e}")
+            if os.path.exists(local_path):
+                os.remove(local_path)
+            update.message.reply_text("❌ Error processing image. Please try again.")
+            return CHECKLIST_ASK_IMAGE
+        
+        # Step 7: Check for duplicates
+        try:
+            submissions_sheet = client.open(SHEET_NAME).worksheet(TAB_SUBMISSIONS)
             records = submissions_sheet.get_all_records()
+            
             for record in records:
                 if (
                     record.get("Date") == context.user_data["date"] and
@@ -766,44 +763,154 @@ def cl_handle_image_upload(update: Update, context):
                     record.get("Submitted By") == context.user_data["emp_name"].replace("_", " ") and
                     record.get("Imagecode") == image_hash
                 ):
-                    update.message.reply_text("❌ Duplicate image detected.")
+                    print("Duplicate image detected")
+                    update.message.reply_text("❌ Duplicate image detected. Please retake the photo.")
                     os.remove(local_path)
                     return CHECKLIST_ASK_IMAGE
-            gfile = drive.CreateFile({
-                'title': filename,
-                'parents': [{'id': DRIVE_FOLDER_ID}],
-                'supportsAllDrives': True
-            })
-            gfile.SetContentFile(local_path)
-            gfile.Upload(param={'supportsAllDrives': True})
-            gfile.InsertPermission({
-                'type': 'anyone',
-                'value': 'anyone',
-                'role': 'reader'
-            })
-            image_url = gfile['alternateLink']
-            if not image_url:
-                raise Exception("Failed to retrieve Google Drive URL on retry")
-            print(f"Debug: Retry Image URL set to {image_url}")  # Temporary debug
-            context.user_data["answers"][-1]["image_link"] = image_url
-            context.user_data["answers"][-1]["image_hash"] = image_hash
+        except Exception as e:
+            print(f"Error checking duplicates: {e}")
+            # Continue anyway - don't block upload for duplicate check failure
+        
+        # Step 8: Upload to Google Drive with enhanced error handling
+        upload_success = False
+        image_url = None
+        
+        for attempt in range(3):  # Try 3 times
+            try:
+                print(f"Upload attempt {attempt + 1} to Google Drive")
+                
+                # Create file metadata
+                gfile = drive.CreateFile({
+                    'title': filename,
+                    'parents': [{'id': DRIVE_FOLDER_ID}],
+                    'supportsAllDrives': True
+                })
+                
+                # Set content
+                gfile.SetContentFile(local_path)
+                
+                # Upload with timeout
+                gfile.Upload(param={'supportsAllDrives': True})
+                print(f"Upload completed for attempt {attempt + 1}")
+                
+                # Set permissions
+                gfile.InsertPermission({
+                    'type': 'anyone',
+                    'value': 'anyone',
+                    'role': 'reader'
+                })
+                print("Permissions set successfully")
+                
+                # Get shareable URL
+                # Try different URL methods
+                if hasattr(gfile, 'alternateLink') and gfile['alternateLink']:
+                    image_url = gfile['alternateLink']
+                elif hasattr(gfile, 'webViewLink') and gfile['webViewLink']:
+                    image_url = gfile['webViewLink']
+                else:
+                    # Construct URL manually
+                    file_id = gfile['id']
+                    image_url = f"https://drive.google.com/file/d/{file_id}/view"
+                
+                if image_url:
+                    print(f"Upload successful! URL: {image_url}")
+                    upload_success = True
+                    break
+                else:
+                    print(f"Upload attempt {attempt + 1}: No URL retrieved")
+                    time.sleep(2)
+                    
+            except Exception as e:
+                print(f"Upload attempt {attempt + 1} failed: {e}")
+                time.sleep(2)
+        
+        if not upload_success or not image_url:
+            if os.path.exists(local_path):
+                os.remove(local_path)
+            update.message.reply_text("❌ Failed to upload image to Google Drive after multiple attempts. Please try again.")
+            return CHECKLIST_ASK_IMAGE
+        
+        # Step 9: Update answer with image URL and hash
+        context.user_data["answers"][-1]["image_link"] = image_url
+        context.user_data["answers"][-1]["image_hash"] = image_hash
+        
+        # Step 10: Save to ChecklistSubmissions
+        try:
+            submissions_sheet = client.open(SHEET_NAME).worksheet(TAB_SUBMISSIONS)
             submissions_sheet.append_row([
                 context.user_data["submission_id"],
                 context.user_data["date"],
                 context.user_data["slot"],
                 context.user_data["outlet"],
                 context.user_data["emp_name"].replace("_", " "),
-                context.user_data["timestamp"]
+                context.user_data["timestamp"],
+                image_hash  # Add image hash to submissions
             ])
-            update.message.reply_text("✅ Image uploaded successfully (retry).")
+            print("Successfully saved to ChecklistSubmissions")
+        except Exception as e:
+            print(f"Error saving to ChecklistSubmissions: {e}")
+            # Don't fail the upload for this - image is already uploaded
+        
+        # Step 11: Clean up and notify success
+        if os.path.exists(local_path):
             os.remove(local_path)
-        except Exception:
-            update.message.reply_text("❌ Error uploading image. Please try again. Contact admin if issue persists.")
-            if os.path.exists(local_path):
-                os.remove(local_path)
-            return CHECKLIST_ASK_IMAGE
+        
+        update.message.reply_text("✅ Image uploaded successfully!")
+        
+    except Exception as e:
+        print(f"Unexpected error in image upload: {e}")
+        # Clean up any temporary files
+        if 'local_path' in locals() and os.path.exists(local_path):
+            os.remove(local_path)
+        update.message.reply_text("❌ Unexpected error during image upload. Please contact admin if the issue persists.")
+        return CHECKLIST_ASK_IMAGE
+    
+    # Move to next question
     context.user_data["current_q"] += 1
     return cl_ask_next_question(update, context)
+
+
+# Additional helper function to test Google Drive connectivity
+def test_drive_connection():
+    """Test function to verify Google Drive connection"""
+    try:
+        # Test Drive connection
+        file_list = drive.ListFile({'q': f"'{DRIVE_FOLDER_ID}' in parents"}).GetList()
+        print(f"Drive connection successful. Found {len(file_list)} files in folder.")
+        return True
+    except Exception as e:
+        print(f"Drive connection test failed: {e}")
+        return False
+
+# Enhanced setup_drive function with better error handling
+def setup_drive_enhanced():
+    """Enhanced Google Drive setup with better error handling"""
+    try:
+        gauth = GoogleAuth()
+        
+        # Check if service account file exists
+        if not os.path.exists(CREDS_FILE):
+            raise Exception(f"Service account file {CREDS_FILE} not found")
+        
+        # Set up credentials
+        gauth.credentials = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
+        
+        # Create drive instance
+        drive_instance = GoogleDrive(gauth)
+        
+        # Test connection
+        try:
+            drive_instance.ListFile({'q': f"'{DRIVE_FOLDER_ID}' in parents", 'maxResults': 1}).GetList()
+            print("Google Drive connection test successful")
+        except Exception as e:
+            print(f"Google Drive connection test failed: {e}")
+            raise
+        
+        return drive_instance
+        
+    except Exception as e:
+        print(f"Failed to setup Google Drive: {e}")
+        raise
 
 def cancel(update: Update, context):
     update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
