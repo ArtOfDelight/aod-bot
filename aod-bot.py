@@ -423,8 +423,11 @@ def get_applicable_checklist_for_outlet(outlet_code):
         return "Generic"
 
 def get_filtered_questions(outlet_code, slot):
-    """Get questions filtered by outlet-specific 'Yes' values from Applicable Checklist and time slot with retry logic"""
+    """Get questions filtered by outlet-specific 'Yes' values from Applicable Checklist, time slot, and current day with retry logic"""
     try:
+        # Get current day of the week
+        current_day = datetime.datetime.now(INDIA_TZ).strftime("%A")  # Returns Monday, Tuesday, etc.
+        
         # Get the applicable checklist from Outlets tab
         outlets_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_OUTLETS)
         outlets_records = outlets_sheet.get_all_records()
@@ -443,20 +446,36 @@ def get_filtered_questions(outlet_code, slot):
         for row in records:
             row_slot = str(row.get("Time_Slot", "")).strip()
             outlet_value = str(row.get(applicable_checklist, "")).strip().lower()
-            if (row_slot.upper() == slot.strip().upper() and outlet_value == "yes"):
+            days_value = str(row.get("Days", "")).strip()
+            
+            # Check if question matches time slot and outlet
+            if row_slot.upper() == slot.strip().upper() and outlet_value == "yes":
+                # Check if question is day-specific
+                if days_value and days_value.lower() != "all":
+                    # Parse days - could be comma-separated like "Monday,Tuesday" or single day
+                    applicable_days = [day.strip() for day in days_value.split(",")]
+                    if current_day not in applicable_days:
+                        continue  # Skip this question if current day is not in the applicable days
+                
                 question_text = row.get("Question_Text", "").strip()
                 if not question_text:
                     continue
+                    
                 filtered_questions.append({
                     "question": question_text,
                     "image_required": str(row.get("Image Required", "")).strip().lower() == "yes"
                 })
+                
         if not filtered_questions:
             return []
         return filtered_questions
+        
     except Exception as e:
         time.sleep(1)  # Brief delay before retry
         try:
+            # Get current day of the week for retry
+            current_day = datetime.datetime.now(INDIA_TZ).strftime("%A")
+            
             outlets_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_OUTLETS)
             outlets_records = outlets_sheet.get_all_records()
             applicable_checklist = None
@@ -466,20 +485,34 @@ def get_filtered_questions(outlet_code, slot):
                     break
             if not applicable_checklist:
                 return []
+                
             sheet = client.open(SHEET_NAME).worksheet(TAB_CHECKLIST)
             records = sheet.get_all_records()
             filtered_questions = []
+            
             for row in records:
                 row_slot = str(row.get("Time_Slot", "")).strip()
                 outlet_value = str(row.get(applicable_checklist, "")).strip().lower()
-                if (row_slot.upper() == slot.strip().upper() and outlet_value == "yes"):
+                days_value = str(row.get("Days", "")).strip()
+                
+                # Check if question matches time slot and outlet
+                if row_slot.upper() == slot.strip().upper() and outlet_value == "yes":
+                    # Check if question is day-specific
+                    if days_value and days_value.lower() != "all":
+                        # Parse days - could be comma-separated like "Monday,Tuesday" or single day
+                        applicable_days = [day.strip() for day in days_value.split(",")]
+                        if current_day not in applicable_days:
+                            continue  # Skip this question if current day is not in the applicable days
+                    
                     question_text = row.get("Question_Text", "").strip()
                     if not question_text:
                         continue
+                        
                     filtered_questions.append({
                         "question": question_text,
                         "image_required": str(row.get("Image Required", "")).strip().lower() == "yes"
                     })
+                    
             return filtered_questions
         except Exception:
             return []
