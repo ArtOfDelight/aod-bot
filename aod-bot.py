@@ -593,6 +593,16 @@ def handle_location(update: Update, context):
     action = context.user_data["action"]
     column = "Sign-In Time" if action == "signin" else "Sign-Out Time"
 
+    # Fetch employee name for notification
+    emp_id = context.user_data["emp_id"]
+    emp_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
+    emp_records = emp_sheet.get_all_records()
+    emp_name = "Unknown"
+    for row in emp_records:
+        if str(row.get("Employee ID", "")).strip() == emp_id:
+            emp_name = row.get("Short Name", "Unknown")
+            break
+
     if action == "signout":
         sign_in_str = context.user_data["sheet"].cell(
             context.user_data["row"], context.user_data["sheet"].row_values(1).index("Sign-In Time") + 1
@@ -609,6 +619,41 @@ def handle_location(update: Update, context):
             timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
     else:
         timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Check for late sign-in
+        try:
+            start_time_str = context.user_data["sheet"].cell(
+                context.user_data["row"], context.user_data["sheet"].row_values(1).index("Start Time") + 1
+            ).value
+            if start_time_str and start_time_str != "N/A":
+                try:
+                    # Combine today's date with the start time
+                    today_str = now.strftime("%Y-%m-%d")
+                    start_datetime = datetime.datetime.strptime(f"{today_str} {start_time_str}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+                    if now > start_datetime:
+                        # Sign-in is late, send alert to the specified chat ID
+                        late_message = (
+                            f"⚠️ Late Sign-In Alert\n"
+                            f"Employee: {emp_name}\n"
+                            f"Outlet: {context.user_data['outlet_code']}\n"
+                            f"Scheduled Start: {start_time_str}\n"
+                            f"Sign-In Time: {timestamp}\n"
+                            f"Delay: {(now - start_datetime).total_seconds() / 60:.1f} minutes"
+                        )
+                        try:
+                            bot.send_message(chat_id=-4806089418, text=late_message)
+                            print(f"Sent late sign-in alert for {emp_name} to chat ID -4806089418")
+                        except Exception as e:
+                            print(f"Failed to send late sign-in alert: {e}")
+                except ValueError as e:
+                    print(f"Error parsing start time {start_time_str}: {e}")
+                    # Optionally notify manager of invalid start time
+                    bot.send_message(
+                        chat_id=MANAGER_CHAT_ID,
+                        text=f"⚠️ Invalid start time format '{start_time_str}' for {emp_name} at {context.user_data['outlet_code']}"
+                    )
+        except Exception as e:
+            print(f"Error checking start time for late sign-in: {e}")
 
     update_sheet(context.user_data["sheet"], context.user_data["row"], column, timestamp)
 
