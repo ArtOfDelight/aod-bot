@@ -620,7 +620,7 @@ def handle_location(update: Update, context):
     else:
         timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
 
-        # Check for late sign-in
+        # Check for late sign-in with 15-minute grace period
         try:
             start_time_str = context.user_data["sheet"].cell(
                 context.user_data["row"], context.user_data["sheet"].row_values(1).index("Start Time") + 1
@@ -630,8 +630,10 @@ def handle_location(update: Update, context):
                     # Combine today's date with the start time
                     today_str = now.strftime("%Y-%m-%d")
                     start_datetime = datetime.datetime.strptime(f"{today_str} {start_time_str}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo("Asia/Kolkata"))
-                    if now > start_datetime:
-                        # Sign-in is late, send alert to the specified chat ID
+                    # Add 15-minute grace period
+                    grace_period_end = start_datetime + datetime.timedelta(minutes=15)
+                    if now > grace_period_end:
+                        # Sign-in is late (after grace period), send alert to the specified chat ID
                         late_message = (
                             f"⚠️ Late Sign-In Alert\n"
                             f"Employee: {emp_name}\n"
