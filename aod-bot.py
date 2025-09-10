@@ -1272,19 +1272,21 @@ def ticket_handle_issue(update: Update, context):
         ticket_sheet = client.open_by_key(TICKET_SHEET_ID).worksheet(TAB_TICKETS)
         headers = ticket_sheet.row_values(1)
         if not headers:
-            headers = ["Ticket ID", "Date", "Outlet", "Submitted By", "Ticket Type", "Issue Description", "Image Link", "Image Hash", "Status"]
-            ticket_sheet.update('A1:I1', [headers])
+            headers = ["Ticket ID", "Date", "Outlet", "Submitted By", "Issue Description", "Image Link", "Image Hash", "Status", "Assigned To", "Action Taken", "Type"]
+            ticket_sheet.update('A1:K1', [headers])
         
         row_data = [
             context.user_data["ticket_id"],
             context.user_data["date"],
             context.user_data["outlet"],
             context.user_data["emp_name"].replace("_", " "),
-            context.user_data["ticket_type"],  # New field
             issue_text,
             image_url,
             image_hash,
-            "Open"
+            "Open",
+            "",  # Assigned To (empty initially)
+            "",  # Action Taken (empty initially)
+            context.user_data["ticket_type"]  # Type as last column
         ]
         for attempt in range(3):
             try:
