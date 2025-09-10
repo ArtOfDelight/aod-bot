@@ -134,6 +134,36 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
 
+def send_chat_id_notification(update: Update, emp_name: str, outlet_code: str):
+    """Send chat ID notification to manager when someone signs in"""
+    try:
+        user = update.message.from_user
+        chat_id = update.message.chat_id
+        
+        # Format user information
+        user_info = f"ID: {user.id}"
+        if user.username:
+            user_info += f", Username: @{user.username}"
+        if user.first_name:
+            user_info += f", First Name: {user.first_name}"
+        if user.last_name:
+            user_info += f", Last Name: {user.last_name}"
+        
+        notification_message = (
+            f"🔔 New Sign-In Alert\n\n"
+            f"👤 Employee: {emp_name}\n"
+            f"🏢 Outlet: {outlet_code}\n"
+            f"💬 Chat ID: {chat_id}\n"
+            f"📱 User Info: {user_info}\n"
+            f"🕐 Time: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        
+        bot.send_message(chat_id=MANAGER_CHAT_ID, text=notification_message)
+        print(f"Sent chat ID notification for {emp_name} (Chat ID: {chat_id}) to manager")
+        
+    except Exception as e:
+        print(f"Failed to send chat ID notification: {e}")
+
 def send_attendance_report(update: Update, context, mode="signin_only"):
     try:
         now = datetime.datetime.now(INDIA_TZ)
@@ -581,6 +611,10 @@ def handle_location(update: Update, context):
         if str(row.get("Employee ID", "")).strip() == emp_id:
             emp_name = row.get("Short Name", "Unknown")
             break
+
+    # Send chat ID notification when signing in
+    if action == "signin":
+        send_chat_id_notification(update, emp_name, context.user_data["outlet_code"])
 
     if action == "signout":
         sign_in_str = context.user_data["sheet"].cell(
@@ -1433,4 +1467,3 @@ def set_webhook():
 # === Main Entry Point ===
 setup_dispatcher()
 set_webhook()
-    
