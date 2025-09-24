@@ -870,42 +870,113 @@ def handle_location(update: Update, context):
     )
     return ConversationHandler.END
 
+def get_available_time_slots():
+    """Get available time slots based on current time"""
+    now = datetime.datetime.now(INDIA_TZ)
+    current_time = now.time()
+    available_slots = []
+    
+    # Define time ranges for each slot
+    morning_start = datetime.time(9, 0)   # 9:00 AM
+    morning_end = datetime.time(13, 0)    # 1:00 PM
+    
+    midday_start = datetime.time(16, 0)   # 4:00 PM
+    midday_end = datetime.time(19, 0)     # 7:00 PM
+    
+    closing_start = datetime.time(23, 0)  # 11:00 PM
+    closing_end = datetime.time(3, 0)     # 3:00 AM (next day)
+    
+    # Check Morning slot (9 AM to 1 PM)
+    if morning_start <= current_time <= morning_end:
+        available_slots.append("Morning")
+    
+    # Check Mid Day slot (4 PM to 7 PM)  
+    if midday_start <= current_time <= midday_end:
+        available_slots.append("Mid Day")
+    
+    # Check Closing slot (11 PM to 3 AM) - spans midnight
+    if current_time >= closing_start or current_time <= closing_end:
+        available_slots.append("Closing")
+    
+    return available_slots
+
 def cl_handle_contact(update: Update, context):
     print("Handling checklist contact verification")
     if not update.message.contact:
         print("No contact received")
         update.message.reply_text("❌ Please use the button to send your contact.")
         return CHECKLIST_ASK_CONTACT
+    
     phone = normalize_number(update.message.contact.phone_number)
     emp_name, outlet_code = get_employee_info(phone)
+    
     if emp_name == "Unknown" or not outlet_code:
         print(f"Invalid employee info for phone {phone}")
         update.message.reply_text("❌ You're not rostered today or not registered.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
+    
     context.user_data.update({"emp_name": emp_name, "outlet": outlet_code})
     print(f"Contact verified: emp_name={emp_name}, outlet_code={outlet_code}")
-    update.message.reply_text("⏰ Select time slot:",
-                             reply_markup=ReplyKeyboardMarkup([["Morning", "Mid Day", "Closing"]], one_time_keyboard=True, resize_keyboard=True))
+    
+    # Get available time slots based on current time
+    available_slots = get_available_time_slots()
+    
+    if not available_slots:
+        current_time = datetime.datetime.now(INDIA_TZ).strftime("%H:%M")
+        update.message.reply_text(
+            f"❌ No checklist time slots are currently available.\n"
+            f"Current time: {current_time}\n\n"
+            f"Available times:\n"
+            f"🌅 Morning: 9:00 AM - 1:00 PM\n"
+            f"🌞 Mid Day: 4:00 PM - 7:00 PM\n" 
+            f"🌙 Closing: 11:00 PM - 3:00 AM",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+    
+    # Create keyboard with only available slots
+    keyboard = [available_slots]  # Put all available slots in one row
+    
+    current_time = datetime.datetime.now(INDIA_TZ).strftime("%H:%M")
+    update.message.reply_text(
+        f"⏰ Select time slot (Current time: {current_time}):",
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    )
     return CHECKLIST_ASK_SLOT
 
 def cl_load_questions(update: Update, context):
     print("Loading checklist questions for selected slot")
     slot = update.message.text
-    if slot not in ["Morning", "Mid Day", "Closing"]:
-        print(f"Invalid slot selected: {slot}")
-        update.message.reply_text("❌ Invalid time slot. Please select Morning, Mid Day, or Closing.")
-        return CHECKLIST_ASK_SLOT
+    
+    # Verify the selected slot is still valid (in case time changed during interaction)
+    available_slots = get_available_time_slots()
+    
+    if slot not in available_slots:
+        print(f"Selected slot '{slot}' is no longer available")
+        current_time = datetime.datetime.now(INDIA_TZ).strftime("%H:%M")
+        update.message.reply_text(
+            f"❌ The '{slot}' time slot is no longer available.\n"
+            f"Current time: {current_time}\n"
+            f"Please use /start to try again.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+    
     context.user_data["slot"] = slot
     context.user_data["submission_id"] = str(uuid.uuid4())[:8]
     context.user_data["timestamp"] = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d %H:%M:%S")
     context.user_data["date"] = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d")
+    
     questions = get_filtered_questions(context.user_data["outlet"], context.user_data["slot"])
+    
     if not questions:
         print(f"No questions found for outlet {context.user_data['outlet']}, slot {slot}")
         update.message.reply_text("❌ No checklist questions found for this outlet and time slot.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
+    
     context.user_data.update({"questions": questions, "answers": [], "current_q": 0})
     print(f"Loaded {len(questions)} questions for outlet {context.user_data['outlet']}, slot {slot}")
+    
     return cl_ask_next_question(update, context)
 
 def cl_ask_next_question(update: Update, context):
