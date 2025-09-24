@@ -5,6 +5,7 @@ import datetime
 import uuid
 import hashlib
 import time
+import threading
 from werkzeug.utils import secure_filename
 from zoneinfo import ZoneInfo
 from flask import Flask, request
@@ -50,6 +51,42 @@ TICKET_FOLDER = "tickets"
 DRIVE_FOLDER_ID = "1FJuTky2XPUSNMAC41SOQ-TFKzSq9Wd7i"  # Checklist folder in shared drive
 TICKET_DRIVE_FOLDER_ID = "1frXb-FRKRPPDql4l_VxUJ8r9xgdSfRj-"  # Tickets folder in shared drive
 SHARED_DRIVE_ID = "0AEmGXk8Yd_pdUk9PVA"  # The shared drive root
+
+# === Employee Chat ID Mapping ===
+EMPLOYEE_CHAT_IDS = {
+    # Format: "name": chat_id
+    "jatin": 1225343546,
+    "jatin gupta": 1225343546,
+    "nishat": 700113654,
+    "jangnu": 8400579657,
+    "thai": 8433870410,
+    "hoi": 8324448967,
+    "margaret": 7396448359,
+    "len kipgen": 8043563257,
+    "ismael": 8274977654,
+    "henry kom": 7834312007,
+    "mang khogin haokip": 7956138483,
+    "chong": 7640224130,
+    "sang": 7271784467,
+    "mangboi": 5797297006,
+    "jin": 7653545568,
+    "thangboi": 7433782718,
+    "minthang": 7846028575,
+    "zansung": 8090423149,
+    "jimmy": 7723630977,
+    "jangminlun": 6544050111,
+    "guang": 7166706276,
+    "mimin": 7570430343,
+    "henry khongsai": 7983568192,
+    "risat": 5071738315,
+    "sailo": 8137803384,
+    "william": 7639147592,
+    "kai": 5911348182
+}
+
+# Global variables for reminder tracking
+reminder_status = {}  # Format: {emp_id: {"last_reminder": datetime, "reminders_sent": count}}
+reminder_lock = threading.Lock()
 
 # === Flask + Telegram Setup ===
 app = Flask(__name__)
@@ -115,6 +152,140 @@ ASK_ACTION, ASK_PHONE, ASK_LOCATION = range(3)
 CHECKLIST_ASK_CONTACT, CHECKLIST_ASK_SLOT, CHECKLIST_ASK_QUESTION, CHECKLIST_ASK_IMAGE = range(10, 14)
 TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_ISSUE = range(20, 23)  # Added TICKET_ASK_TYPE
 
+# === Sign-In Reminder Functions ===
+def get_employee_chat_id(emp_id, short_name):
+    """Get chat ID for an employee using both emp_id and short_name"""
+    if not short_name:
+        return None
+    
+    # First try to match by short name (case insensitive)
+    short_name_lower = short_name.lower().strip()
+    if short_name_lower in EMPLOYEE_CHAT_IDS:
+        return EMPLOYEE_CHAT_IDS[short_name_lower]
+    
+    # Try partial matches for names with spaces or variations
+    for name in EMPLOYEE_CHAT_IDS:
+        if short_name_lower in name or name in short_name_lower:
+            return EMPLOYEE_CHAT_IDS[name]
+    
+    print(f"No chat ID found for employee: {emp_id} ({short_name})")
+    return None
+
+def check_and_send_reminders():
+    """Check if any employee needs a sign-in reminder and send it"""
+    try:
+        now = datetime.datetime.now(INDIA_TZ)
+        current_time = now.time()
+        current_date = now.strftime("%d/%m/%Y")
+        
+        # Get today's roster
+        gc = gspread.authorize(ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE))
+        roster_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_ROSTER)
+        emp_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
+        
+        roster_records = roster_sheet.get_all_records()
+        emp_records = emp_sheet.get_all_records()
+        
+        # Create employee ID to name mapping
+        emp_id_to_name = {
+            str(row.get("Employee ID")).strip(): row.get("Short Name", "")
+            for row in emp_records if row.get("Employee ID")
+        }
+        
+        for row in roster_records:
+            if str(row.get("Date", "")).strip() != current_date:
+                continue
+                
+            emp_id = str(row.get("Employee ID", "")).strip()
+            short_name = emp_id_to_name.get(emp_id, "")
+            outlet = str(row.get("Outlet", "")).strip()
+            start_time_str = str(row.get("Start Time", "")).strip()
+            signin_time = str(row.get("Sign-In Time", "")).strip()
+            
+            # Skip if no start time, weekly off, or already signed in
+            if not start_time_str or start_time_str == "N/A" or outlet.lower() == "wo" or signin_time:
+                continue
+                
+            try:
+                start_time = datetime.datetime.strptime(start_time_str, "%H:%M:%S").time()
+            except ValueError:
+                print(f"Invalid start time format for {emp_id}: {start_time_str}")
+                continue
+            
+            # Calculate reminder time (start time + 10 minutes)
+            start_datetime = datetime.datetime.combine(now.date(), start_time)
+            reminder_time = (start_datetime + datetime.timedelta(minutes=10)).time()
+            
+            # Check if it's time for a reminder (within 1 minute window)
+            if current_time >= reminder_time:
+                # Check if we need to send a reminder
+                with reminder_lock:
+                    emp_status = reminder_status.get(emp_id, {})
+                    last_reminder = emp_status.get("last_reminder")
+                    reminders_sent = emp_status.get("reminders_sent", 0)
+                    
+                    # Send reminder if:
+                    # 1. Never sent before, OR
+                    # 2. Last reminder was more than 10 minutes ago
+                    should_send = (
+                        last_reminder is None or 
+                        now - last_reminder >= datetime.timedelta(minutes=10)
+                    )
+                    
+                    # Stop sending after 6 reminders (1 hour)
+                    if reminders_sent >= 6:
+                        should_send = False
+                    
+                    if should_send:
+                        chat_id = get_employee_chat_id(emp_id, short_name)
+                        if chat_id:
+                            send_signin_reminder(chat_id, short_name, outlet, start_time_str)
+                            
+                            # Update reminder status
+                            reminder_status[emp_id] = {
+                                "last_reminder": now,
+                                "reminders_sent": reminders_sent + 1
+                            }
+                            
+                            print(f"Sent reminder {reminders_sent + 1} to {short_name} ({emp_id})")
+                        
+    except Exception as e:
+        print(f"Error in check_and_send_reminders: {e}")
+
+def send_signin_reminder(chat_id, emp_name, outlet, start_time):
+    """Send sign-in reminder to an employee"""
+    try:
+        current_time = datetime.datetime.now(INDIA_TZ).strftime("%H:%M")
+        message = (
+            f"🚨 SIGN-IN REMINDER 🚨\n\n"
+            f"Hello {emp_name}!\n"
+            f"⏰ Your shift started at {start_time}\n"
+            f"🏢 Outlet: {outlet}\n"
+            f"⌚ Current time: {current_time}\n\n"
+            f"Please sign in immediately using /start"
+        )
+        
+        bot.send_message(chat_id=chat_id, text=message)
+        print(f"Reminder sent to {emp_name} (Chat ID: {chat_id})")
+        
+    except Exception as e:
+        print(f"Failed to send reminder to {emp_name} (Chat ID: {chat_id}): {e}")
+
+def reminder_worker():
+    """Background worker that runs reminder checks every minute"""
+    print("Sign-in reminder service started")
+    while True:
+        try:
+            check_and_send_reminders()
+            time.sleep(60)  # Check every minute
+        except Exception as e:
+            print(f"Error in reminder_worker: {e}")
+            time.sleep(60)
+
+# Start the reminder worker thread
+reminder_thread = threading.Thread(target=reminder_worker, daemon=True)
+reminder_thread.start()
+
 # === Utility Functions ===
 def normalize_number(number):
     return re.sub(r"\D", "", number)[-10:]
@@ -160,6 +331,25 @@ def send_chat_id_notification(update: Update, emp_name: str, outlet_code: str):
         
         bot.send_message(chat_id=MANAGER_CHAT_ID, text=notification_message)
         print(f"Sent chat ID notification for {emp_name} (Chat ID: {chat_id}) to manager")
+        
+        # Clear reminder status when employee signs in
+        with reminder_lock:
+            emp_id = None
+            # Find employee ID from name (reverse lookup)
+            try:
+                gc = gspread.authorize(ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE))
+                emp_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
+                emp_records = emp_sheet.get_all_records()
+                for row in emp_records:
+                    if str(row.get("Short Name", "")).strip().lower() == emp_name.lower():
+                        emp_id = str(row.get("Employee ID", "")).strip()
+                        break
+                
+                if emp_id and emp_id in reminder_status:
+                    del reminder_status[emp_id]
+                    print(f"Cleared reminder status for {emp_name} ({emp_id})")
+            except Exception as e:
+                print(f"Error clearing reminder status: {e}")
         
     except Exception as e:
         print(f"Failed to send chat ID notification: {e}")
@@ -1398,6 +1588,26 @@ def reset(update: Update, context):
     update.message.reply_text("🔁 Reset successful. You can now use /start again.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
+# === Manual Reminder Commands (for testing) ===
+def test_reminders(update: Update, context):
+    """Manual command to test reminder system"""
+    check_and_send_reminders()
+    update.message.reply_text("✅ Reminder check completed. Check logs for details.")
+
+def reminder_status_cmd(update: Update, context):
+    """Show current reminder status"""
+    if not reminder_status:
+        update.message.reply_text("No reminders have been sent yet today.")
+        return
+    
+    message = ["📊 Reminder Status:\n"]
+    for emp_id, status in reminder_status.items():
+        last_reminder = status['last_reminder'].strftime('%H:%M:%S') if status.get('last_reminder') else 'Never'
+        reminders_sent = status.get('reminders_sent', 0)
+        message.append(f"Employee {emp_id}: {reminders_sent} reminders, last at {last_reminder}")
+    
+    update.message.reply_text('\n'.join(message))
+
 # === Dispatcher & Webhook ===
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
@@ -1438,6 +1648,8 @@ def setup_dispatcher():
     dispatcher.add_handler(CommandHandler("statustoday", statustoday))
     dispatcher.add_handler(CommandHandler("statusyesterday", statusyesterday))
     dispatcher.add_handler(CommandHandler("getroster", getroster))
+    dispatcher.add_handler(CommandHandler("testreminders", test_reminders))  # New command
+    dispatcher.add_handler(CommandHandler("reminderstatus", reminder_status_cmd))  # New command
 
     try:
         bot.set_my_commands([
@@ -1445,7 +1657,9 @@ def setup_dispatcher():
             ("reset", "Reset the conversation"),
             ("statustoday", "Show today's sign-in status"),
             ("statusyesterday", "Show yesterday's full attendance report"),
-            ("getroster", "Show today's roster")
+            ("getroster", "Show today's roster"),
+            ("testreminders", "Test reminder system (admin only)"),
+            ("reminderstatus", "Show reminder status (admin only)")
         ])
         print("Bot commands set successfully.")
     except Exception as e:
@@ -1467,3 +1681,4 @@ def set_webhook():
 # === Main Entry Point ===
 setup_dispatcher()
 set_webhook()
+print("Bot started with sign-in reminder system active!")
