@@ -26,6 +26,21 @@ import requests
 MANAGER_CHAT_ID = 1225343546  # Replace with the actual Telegram chat ID
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
 
+# === CHECKLIST REMINDER GROUP CHAT IDS ===
+CHECKLIST_REMINDER_GROUPS = {
+    "Indiranagar": -1002948281335,
+    "Rajajinagar": -1003066421667,
+    "Kalyanagar": -1002759362664,
+    "Residency road": -1002790081068,
+    "Arekere": -1002841341154,
+    "Bellandur": -1002994210052,
+    "Sahakarnagar": -1002997273776,
+    "Whitefield": -1002946796668,
+    "Jayanagar": -1002940144068,
+    "Koramangala": -1003065122566,
+    "HSR": -1003082789513
+}
+
 # === CONFIGURATION ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = "https://aod-bot-t2ux.onrender.com"
@@ -95,6 +110,10 @@ EMPLOYEE_CHAT_IDS = {
 reminder_status = {}  # Format: {emp_id: {"last_reminder": datetime, "reminders_sent": count}}
 reminder_lock = threading.Lock()
 
+# Global variables for checklist reminder tracking
+checklist_reminder_status = {}  # Format: {slot: {"last_reminder": datetime}}
+checklist_reminder_lock = threading.Lock()
+
 # === Flask + Telegram Setup ===
 app = Flask(__name__)
 bot = Bot(token=BOT_TOKEN)
@@ -158,6 +177,107 @@ drive = setup_drive()
 ASK_ACTION, ASK_PHONE, ASK_LOCATION = range(3)
 CHECKLIST_ASK_CONTACT, CHECKLIST_ASK_SLOT, CHECKLIST_ASK_QUESTION, CHECKLIST_ASK_IMAGE = range(10, 14)
 TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_ISSUE = range(20, 23)  # Added TICKET_ASK_TYPE
+
+# === Checklist Reminder Functions ===
+def send_checklist_reminder_to_groups(slot):
+    """Send checklist reminders to all outlet groups"""
+    try:
+        current_time = datetime.datetime.now(INDIA_TZ).strftime("%H:%M")
+        current_date = datetime.datetime.now(INDIA_TZ).strftime("%d/%m/%Y")
+        
+        # Create reminder message based on slot
+        slot_emojis = {
+            "Morning": "🌅",
+            "Mid Day": "🌞", 
+            "Closing": "🌙"
+        }
+        
+        emoji = slot_emojis.get(slot, "📋")
+        message = (
+            f"{emoji} CHECKLIST REMINDER {emoji}\n\n"
+            f"📋 Don't forget to fill the {slot} checklist!\n"
+            f"📅 Date: {current_date}\n"
+            f"⏰ Time: {current_time}\n\n"
+            f"Use /start to access the bot and fill your checklist.\n"
+            f"⚠️ Please ensure all staff complete their checklist on time."
+        )
+        
+        successful_sends = 0
+        failed_sends = 0
+        
+        for outlet_name, chat_id in CHECKLIST_REMINDER_GROUPS.items():
+            try:
+                bot.send_message(chat_id=chat_id, text=message)
+                print(f"Sent {slot} checklist reminder to {outlet_name} (Chat ID: {chat_id})")
+                successful_sends += 1
+                time.sleep(0.1)  # Small delay to avoid rate limiting
+            except Exception as e:
+                print(f"Failed to send {slot} checklist reminder to {outlet_name} (Chat ID: {chat_id}): {e}")
+                failed_sends += 1
+        
+        print(f"Checklist reminder summary: {successful_sends} successful, {failed_sends} failed")
+        
+        # Send summary to manager
+        try:
+            summary_message = (
+                f"📊 {slot} Checklist Reminder Summary\n"
+                f"✅ Successful: {successful_sends}\n"
+                f"❌ Failed: {failed_sends}\n"
+                f"⏰ Sent at: {current_time}"
+            )
+            bot.send_message(chat_id=MANAGER_CHAT_ID, text=summary_message)
+        except Exception as e:
+            print(f"Failed to send summary to manager: {e}")
+            
+    except Exception as e:
+        print(f"Error in send_checklist_reminder_to_groups: {e}")
+
+def check_and_send_checklist_reminders():
+    """Check if it's time to send checklist reminders"""
+    try:
+        now = datetime.datetime.now(INDIA_TZ)
+        current_time = now.time()
+        current_date = now.strftime("%Y-%m-%d")
+        
+        # Define reminder times (start of each slot)
+        morning_start = datetime.time(9, 0)   # 9:00 AM
+        midday_start = datetime.time(16, 0)   # 4:00 PM  
+        closing_start = datetime.time(23, 0)  # 11:00 PM
+        
+        # Check which slot we should remind for
+        slot_to_remind = None
+        
+        # Check Morning slot (send reminder at 9:00 AM)
+        if current_time.hour == morning_start.hour and current_time.minute == morning_start.minute:
+            slot_to_remind = "Morning"
+        
+        # Check Mid Day slot (send reminder at 4:00 PM)
+        elif current_time.hour == midday_start.hour and current_time.minute == midday_start.minute:
+            slot_to_remind = "Mid Day"
+        
+        # Check Closing slot (send reminder at 11:00 PM)
+        elif current_time.hour == closing_start.hour and current_time.minute == closing_start.minute:
+            slot_to_remind = "Closing"
+        
+        if slot_to_remind:
+            with checklist_reminder_lock:
+                # Check if we already sent reminder for this slot today
+                reminder_key = f"{slot_to_remind}_{current_date}"
+                last_reminder = checklist_reminder_status.get(reminder_key)
+                
+                # Only send if we haven't sent today or it's been more than 23 hours
+                should_send = (
+                    last_reminder is None or 
+                    now - last_reminder >= datetime.timedelta(hours=23)
+                )
+                
+                if should_send:
+                    send_checklist_reminder_to_groups(slot_to_remind)
+                    checklist_reminder_status[reminder_key] = now
+                    print(f"Sent {slot_to_remind} checklist reminders")
+                    
+    except Exception as e:
+        print(f"Error in check_and_send_checklist_reminders: {e}")
 
 # === Sign-In Reminder Functions ===
 def get_employee_chat_id(emp_id, short_name):
@@ -280,10 +400,15 @@ def send_signin_reminder(chat_id, emp_name, outlet, start_time):
 
 def reminder_worker():
     """Background worker that runs reminder checks every minute"""
-    print("Sign-in reminder service started")
+    print("Sign-in and checklist reminder service started")
     while True:
         try:
+            # Check sign-in reminders
             check_and_send_reminders()
+            
+            # Check checklist reminders
+            check_and_send_checklist_reminders()
+            
             time.sleep(60)  # Check every minute
         except Exception as e:
             print(f"Error in reminder_worker: {e}")
@@ -878,7 +1003,7 @@ def get_available_time_slots():
     
     # Define time ranges for each slot
     morning_start = datetime.time(9, 0)   # 9:00 AM
-    morning_end = datetime.time(14, 0)    # 1:00 PM
+    morning_end = datetime.time(13, 0)    # 1:00 PM
     
     midday_start = datetime.time(16, 0)   # 4:00 PM
     midday_end = datetime.time(19, 0)     # 7:00 PM
@@ -1666,23 +1791,49 @@ def reset(update: Update, context):
     update.message.reply_text("🔁 Reset successful. You can now use /start again.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# === Manual Reminder Commands (for testing) ===
+# === Manual Testing Commands ===
 def test_reminders(update: Update, context):
-    """Manual command to test reminder system"""
+    """Manual command to test sign-in reminder system"""
     check_and_send_reminders()
-    update.message.reply_text("✅ Reminder check completed. Check logs for details.")
+    update.message.reply_text("✅ Sign-in reminder check completed. Check logs for details.")
+
+def test_checklist_reminders(update: Update, context):
+    """Manual command to test checklist reminder system"""
+    check_and_send_checklist_reminders()
+    update.message.reply_text("✅ Checklist reminder check completed. Check logs for details.")
+
+def send_test_checklist_reminder(update: Update, context):
+    """Manual command to send test checklist reminders"""
+    args = context.args
+    if not args:
+        update.message.reply_text("Usage: /testchecklistreminder <Morning|Mid Day|Closing>")
+        return
+    
+    slot = ' '.join(args)
+    if slot not in ["Morning", "Mid Day", "Closing"]:
+        update.message.reply_text("❌ Invalid slot. Use: Morning, Mid Day, or Closing")
+        return
+    
+    send_checklist_reminder_to_groups(slot)
+    update.message.reply_text(f"✅ Test {slot} checklist reminders sent to all groups.")
 
 def reminder_status_cmd(update: Update, context):
     """Show current reminder status"""
-    if not reminder_status:
-        update.message.reply_text("No reminders have been sent yet today.")
-        return
+    message = ["📊 Sign-In Reminder Status:\n"]
+    if reminder_status:
+        for emp_id, status in reminder_status.items():
+            last_reminder = status['last_reminder'].strftime('%H:%M:%S') if status.get('last_reminder') else 'Never'
+            reminders_sent = status.get('reminders_sent', 0)
+            message.append(f"Employee {emp_id}: {reminders_sent} reminders, last at {last_reminder}")
+    else:
+        message.append("No sign-in reminders have been sent yet today.")
     
-    message = ["📊 Reminder Status:\n"]
-    for emp_id, status in reminder_status.items():
-        last_reminder = status['last_reminder'].strftime('%H:%M:%S') if status.get('last_reminder') else 'Never'
-        reminders_sent = status.get('reminders_sent', 0)
-        message.append(f"Employee {emp_id}: {reminders_sent} reminders, last at {last_reminder}")
+    message.append(f"\n📋 Checklist Reminder Status:")
+    if checklist_reminder_status:
+        for reminder_key, last_sent in checklist_reminder_status.items():
+            message.append(f"{reminder_key}: last sent at {last_sent.strftime('%Y-%m-%d %H:%M:%S')}")
+    else:
+        message.append("No checklist reminders have been sent yet today.")
     
     update.message.reply_text('\n'.join(message))
 
@@ -1700,7 +1851,7 @@ def webhook():
 
 @app.route("/", methods=["GET"])
 def health_check():
-    return "AOD Bot is running!"
+    return "AOD Bot is running with checklist reminders!"
 
 def setup_dispatcher():
     dispatcher.add_handler(ConversationHandler(
@@ -1714,7 +1865,7 @@ def setup_dispatcher():
             CHECKLIST_ASK_QUESTION: [MessageHandler(Filters.text & ~Filters.command, cl_handle_answer)],
             CHECKLIST_ASK_IMAGE: [MessageHandler(Filters.photo, cl_handle_image_upload)],
             TICKET_ASK_CONTACT: [MessageHandler(Filters.contact, ticket_handle_contact)],
-            TICKET_ASK_TYPE: [MessageHandler(Filters.text & ~Filters.command, ticket_handle_type)],  # New state
+            TICKET_ASK_TYPE: [MessageHandler(Filters.text & ~Filters.command, ticket_handle_type)],
             TICKET_ASK_ISSUE: [MessageHandler(Filters.text | Filters.photo, ticket_handle_issue)]
         },
         fallbacks=[
@@ -1726,8 +1877,10 @@ def setup_dispatcher():
     dispatcher.add_handler(CommandHandler("statustoday", statustoday))
     dispatcher.add_handler(CommandHandler("statusyesterday", statusyesterday))
     dispatcher.add_handler(CommandHandler("getroster", getroster))
-    dispatcher.add_handler(CommandHandler("testreminders", test_reminders))  # New command
-    dispatcher.add_handler(CommandHandler("reminderstatus", reminder_status_cmd))  # New command
+    dispatcher.add_handler(CommandHandler("testreminders", test_reminders))
+    dispatcher.add_handler(CommandHandler("testchecklistreminders", test_checklist_reminders))
+    dispatcher.add_handler(CommandHandler("testchecklistreminder", send_test_checklist_reminder))
+    dispatcher.add_handler(CommandHandler("reminderstatus", reminder_status_cmd))
 
     try:
         bot.set_my_commands([
@@ -1736,7 +1889,9 @@ def setup_dispatcher():
             ("statustoday", "Show today's sign-in status"),
             ("statusyesterday", "Show yesterday's full attendance report"),
             ("getroster", "Show today's roster"),
-            ("testreminders", "Test reminder system (admin only)"),
+            ("testreminders", "Test sign-in reminder system (admin only)"),
+            ("testchecklistreminders", "Test checklist reminder system (admin only)"),
+            ("testchecklistreminder", "Send test checklist reminder (admin only)"),
             ("reminderstatus", "Show reminder status (admin only)")
         ])
         print("Bot commands set successfully.")
@@ -1759,4 +1914,10 @@ def set_webhook():
 # === Main Entry Point ===
 setup_dispatcher()
 set_webhook()
-print("Bot started with sign-in reminder system active!")
+print("Bot started with sign-in and checklist reminder systems active!")
+print("Checklist reminders will be sent to the following groups:")
+for outlet_name, chat_id in CHECKLIST_REMINDER_GROUPS.items():
+    print(f"  - {outlet_name}: {chat_id}")
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
