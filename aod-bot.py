@@ -198,7 +198,7 @@ def send_checklist_reminder_to_groups(slot):
             f"📋 Don't forget to fill the {slot} checklist!\n"
             f"📅 Date: {current_date}\n"
             f"⏰ Time: {current_time}\n\n"
-            f"Use /start to access the bot and fill your checklist.\n"
+            f"Use https://t.me/attaodbot to access the bot and fill your checklist.\n"
             f"⚠️ Please ensure all staff complete their checklist on time."
         )
         
@@ -389,7 +389,7 @@ def send_signin_reminder(chat_id, emp_name, outlet, start_time):
             f"⏰ Your shift started at {start_time}\n"
             f"🏢 Outlet: {outlet}\n"
             f"⌚ Current time: {current_time}\n\n"
-            f"Please sign in immediately using /start"
+            f"Please sign in immediately using https://t.me/attaodbot"
         )
         
         bot.send_message(chat_id=chat_id, text=message)
@@ -1748,13 +1748,28 @@ def ticket_handle_issue(update: Update, context):
             update.message.reply_text("❌ Unexpected error during image upload. Please contact admin if the issue persists.")
             return TICKET_ASK_ISSUE
 
-    # Save ticket to Tickets tab with ticket type
+    # Save ticket to Tickets tab with detailed categorization and assignment
     try:
         ticket_sheet = client.open_by_key(TICKET_SHEET_ID).worksheet(TAB_TICKETS)
         headers = ticket_sheet.row_values(1)
         if not headers:
-            headers = ["Ticket ID", "Date", "Outlet", "Submitted By", "Issue Description", "Image Link", "Image Hash", "Status", "Assigned To", "Action Taken", "Type"]
-            ticket_sheet.update('A1:K1', [headers])
+            headers = [
+                "Ticket ID", "Date", "Outlet", "Submitted By", "Issue Description", 
+                "Image Link", "Image Hash", "Status", "Assigned To", "Action Taken", 
+                "Category", "Subcategory"
+            ]
+            ticket_sheet.update('A1:L1', [headers])
+        
+        # Determine final ticket display information
+        ticket_category = context.user_data.get("ticket_category", "")
+        ticket_subtype = context.user_data.get("ticket_subtype", "")
+        assigned_to = context.user_data.get("assigned_to", "")
+        
+        # Create full category description
+        if ticket_subtype:
+            full_category = f"{ticket_category} - {ticket_subtype}"
+        else:
+            full_category = ticket_category
         
         row_data = [
             context.user_data["ticket_id"],
@@ -1765,9 +1780,10 @@ def ticket_handle_issue(update: Update, context):
             image_url,
             image_hash,
             "Open",
-            "",  # Assigned To (empty initially)
+            assigned_to,  # Auto-assigned based on category
             "",  # Action Taken (empty initially)
-            context.user_data["ticket_type"]  # Type as last column
+            ticket_category,  # Main category
+            ticket_subtype if ticket_subtype else ""  # Subcategory
         ]
         for attempt in range(3):
             try:
@@ -1786,10 +1802,14 @@ def ticket_handle_issue(update: Update, context):
         update.message.reply_text("❌ Error saving ticket. Please contact admin.")
         return ConversationHandler.END
 
-    # Send confirmation with ticket type
-    ticket_type_display = context.user_data["ticket_type"]
-    update.message.reply_text(f"✅ {ticket_type_display} ticket {context.user_data['ticket_id']} raised successfully!", 
-                             reply_markup=ReplyKeyboardRemove())
+    # Send confirmation with detailed ticket information
+    confirmation_message = f"✅ Ticket {context.user_data['ticket_id']} raised successfully!\n\n"
+    confirmation_message += f"📋 Category: {full_category}\n"
+    if assigned_to:
+        confirmation_message += f"👤 Assigned to: {assigned_to}\n"
+    confirmation_message += f"🕐 Created: {context.user_data['timestamp']}"
+    
+    update.message.reply_text(confirmation_message, reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 def cleanup_file_safely(file_path):
@@ -1920,6 +1940,7 @@ def setup_dispatcher():
             CHECKLIST_ASK_IMAGE: [MessageHandler(Filters.photo, cl_handle_image_upload)],
             TICKET_ASK_CONTACT: [MessageHandler(Filters.contact, ticket_handle_contact)],
             TICKET_ASK_TYPE: [MessageHandler(Filters.text & ~Filters.command, ticket_handle_type)],
+            TICKET_ASK_SUBTYPE: [MessageHandler(Filters.text & ~Filters.command, ticket_handle_subtype)],  # New subtype state
             TICKET_ASK_ISSUE: [MessageHandler(Filters.text | Filters.photo, ticket_handle_issue)]
         },
         fallbacks=[
