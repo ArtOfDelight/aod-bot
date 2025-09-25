@@ -1756,7 +1756,7 @@ def ticket_handle_issue(update: Update, context):
             headers = [
                 "Ticket ID", "Date", "Outlet", "Submitted By", "Issue Description", 
                 "Image Link", "Image Hash", "Status", "Assigned To", "Action Taken", 
-                "Category", "Subcategory"
+                "Category"
             ]
             ticket_sheet.update('A1:L1', [headers])
         
@@ -1782,8 +1782,8 @@ def ticket_handle_issue(update: Update, context):
             "Open",
             assigned_to,  # Auto-assigned based on category
             "",  # Action Taken (empty initially)
-            ticket_category,  # Main category
-            ticket_subtype if ticket_subtype else ""  # Subcategory
+            ticket_category or ticket_subtype if ticket_subtype else "",  # Main category
+              # Subcategory
         ]
         for attempt in range(3):
             try:
