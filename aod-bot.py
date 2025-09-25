@@ -176,7 +176,7 @@ drive = setup_drive()
 # === States ===
 ASK_ACTION, ASK_PHONE, ASK_LOCATION = range(3)
 CHECKLIST_ASK_CONTACT, CHECKLIST_ASK_SLOT, CHECKLIST_ASK_QUESTION, CHECKLIST_ASK_IMAGE = range(10, 14)
-TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_ISSUE = range(20, 23)  # Added TICKET_ASK_TYPE
+TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_SUBTYPE, TICKET_ASK_ISSUE = range(20, 24)  # Added TICKET_ASK_SUBTYPE
 
 # === Checklist Reminder Functions ===
 def send_checklist_reminder_to_groups(slot):
@@ -1440,29 +1440,83 @@ def ticket_handle_contact(update: Update, context):
     })
     print(f"Contact verified for ticket: emp_name={emp_name}, outlet_code={outlet_code}, ticket_id={context.user_data['ticket_id']}")
     
-    # Ask for ticket type
-    update.message.reply_text("📝 What type of ticket would you like to raise?",
-                             reply_markup=ReplyKeyboardMarkup([["🔴 Raise a Complaint", "📦 Place an Order"]], 
-                                                              one_time_keyboard=True, resize_keyboard=True))
+    # Show three main ticket categories
+    keyboard = [
+        ["🔧 Repair and Maintenance"],
+        ["❓ Difficulty in Order"], 
+        ["📦 Place an Order"]
+    ]
+    update.message.reply_text(
+        "📝 What type of ticket would you like to raise?",
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    )
     return TICKET_ASK_TYPE
 
 def ticket_handle_type(update: Update, context):
     print("Handling ticket type selection")
     ticket_type = update.message.text
-    if ticket_type not in ["🔴 Raise a Complaint", "📦 Place an Order"]:
+    
+    if ticket_type == "🔧 Repair and Maintenance":
+        context.user_data["ticket_type"] = "Repair and Maintenance"
+        context.user_data["assigned_to"] = "Nishat"
+        context.user_data["ticket_category"] = "Repair and Maintenance"
+        prompt_text = "Please describe the repair or maintenance issue. You can send a text message or upload a photo with a caption."
+        update.message.reply_text(prompt_text, reply_markup=ReplyKeyboardRemove())
+        return TICKET_ASK_ISSUE
+        
+    elif ticket_type == "❓ Difficulty in Order":
+        context.user_data["ticket_type"] = "Difficulty in Order"
+        context.user_data["assigned_to"] = ""  # No specific assignment mentioned
+        context.user_data["ticket_category"] = "Difficulty in Order"
+        prompt_text = "Please describe the difficulty you're facing with your order. You can send a text message or upload a photo with a caption."
+        update.message.reply_text(prompt_text, reply_markup=ReplyKeyboardRemove())
+        return TICKET_ASK_ISSUE
+        
+    elif ticket_type == "📦 Place an Order":
+        context.user_data["ticket_type"] = "Place an Order"
+        context.user_data["ticket_category"] = "Place an Order"
+        # Show subcategories for "Place an Order"
+        keyboard = [
+            ["📋 Stock Items"],
+            ["🧹 Housekeeping"],
+            ["📌 Others"]
+        ]
+        update.message.reply_text(
+            "📦 What type of order would you like to place?",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return TICKET_ASK_SUBTYPE
+    
+    else:
         print(f"Invalid ticket type selected: {ticket_type}")
         update.message.reply_text("❌ Please select a valid option.")
         return TICKET_ASK_TYPE
+
+def ticket_handle_subtype(update: Update, context):
+    print("Handling ticket subtype selection")
+    subtype = update.message.text
     
-    # Store the ticket type (clean version without emojis)
-    if "Complaint" in ticket_type:
-        context.user_data["ticket_type"] = "Complaint"
-        prompt_text = "Please describe your complaint. You can send a text message or upload a photo with a caption."
+    if subtype == "📋 Stock Items":
+        context.user_data["ticket_subtype"] = "Stock Items"
+        context.user_data["assigned_to"] = "Nishat & Ajay"
+        prompt_text = "Please describe the stock items you need to order. You can send a text message or upload a photo with a caption."
+        
+    elif subtype == "🧹 Housekeeping":
+        context.user_data["ticket_subtype"] = "Housekeeping"
+        context.user_data["assigned_to"] = "Kim"
+        prompt_text = "Please describe the housekeeping items you need to order. You can send a text message or upload a photo with a caption."
+        
+    elif subtype == "📌 Others":
+        context.user_data["ticket_subtype"] = "Others"
+        context.user_data["assigned_to"] = "Kim"
+        prompt_text = "Please describe the other items you need to order. You can send a text message or upload a photo with a caption."
+        
     else:
-        context.user_data["ticket_type"] = "Order"
-        prompt_text = "Please describe your order details. You can send a text message or upload a photo with a caption."
+        print(f"Invalid subtype selected: {subtype}")
+        update.message.reply_text("❌ Please select a valid option.")
+        return TICKET_ASK_SUBTYPE
     
-    print(f"Ticket type selected: {context.user_data['ticket_type']}")
+    print(f"Subtype selected: {context.user_data['ticket_subtype']}, assigned to: {context.user_data['assigned_to']}")
     update.message.reply_text(prompt_text, reply_markup=ReplyKeyboardRemove())
     return TICKET_ASK_ISSUE
 
