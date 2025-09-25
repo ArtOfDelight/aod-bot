@@ -1765,11 +1765,14 @@ def ticket_handle_issue(update: Update, context):
         ticket_subtype = context.user_data.get("ticket_subtype", "")
         assigned_to = context.user_data.get("assigned_to", "")
         
-        # Create full category description
+        # Create full category description for confirmation message
         if ticket_subtype:
             full_category = f"{ticket_category} - {ticket_subtype}"
         else:
             full_category = ticket_category
+        
+        # For the spreadsheet category field: use subcategory if present, else main category
+        category_for_sheet = ticket_subtype if ticket_subtype else ticket_category
         
         row_data = [
             context.user_data["ticket_id"],
@@ -1782,9 +1785,9 @@ def ticket_handle_issue(update: Update, context):
             "Open",
             assigned_to,  # Auto-assigned based on category
             "",  # Action Taken (empty initially)
-            ticket_category or ticket_subtype if ticket_subtype else "",  # Main category
-              # Subcategory
+            category_for_sheet,  # Category (subcategory if present, else main category)
         ]
+        
         for attempt in range(3):
             try:
                 ticket_sheet.append_row(row_data)
