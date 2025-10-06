@@ -732,7 +732,16 @@ def get_employee_info(phone):
         phone = normalize_number(phone)
         emp_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
         emp_records = emp_sheet.get_all_records()
-        today = datetime.datetime.now(INDIA_TZ).strftime("%d/%m/%Y")
+        
+        # FIXED: For early morning hours (after midnight), use yesterday's roster
+        now = datetime.datetime.now(INDIA_TZ)
+        if now.hour < 3:  # Between 00:00 and 03:00, use yesterday
+            target_date = (now - datetime.timedelta(days=1)).strftime("%d/%m/%Y")
+            print(f"Early morning ({now.strftime('%H:%M')}), using yesterday's roster: {target_date}")
+        else:
+            target_date = now.strftime("%d/%m/%Y")
+            print(f"Normal hours, using today's roster: {target_date}")
+        
         for row in emp_records:
             row_phone = normalize_number(str(row.get("Phone Number", "")))
             if row_phone == phone:
@@ -741,7 +750,7 @@ def get_employee_info(phone):
                 roster_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_ROSTER)
                 roster_records = roster_sheet.get_all_records()
                 for record in roster_records:
-                    if record.get("Employee ID") == emp_id and record.get("Date") == today:
+                    if record.get("Employee ID") == emp_id and record.get("Date") == target_date:
                         outlet_code = record.get("Outlet")
                         outlets_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_OUTLETS)
                         outlets_records = outlets_sheet.get_all_records()
@@ -1458,7 +1467,7 @@ def ticket_handle_type(update: Update, context):
     
     if ticket_type == "🔧 Repair and Maintenance":
         context.user_data["ticket_type"] = "Repair and Maintenance"
-        context.user_data["assigned_to"] = "Nishat"
+        context.user_data["assigned_to"] = "Nishat","Jatin"
         context.user_data["ticket_category"] = "Repair and Maintenance"
         prompt_text = "Please describe the repair or maintenance issue. You can send a text message or upload a photo with a caption."
         update.message.reply_text(prompt_text, reply_markup=ReplyKeyboardRemove())
