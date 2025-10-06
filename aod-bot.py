@@ -9,6 +9,7 @@ import threading
 from werkzeug.utils import secure_filename
 from zoneinfo import ZoneInfo
 from flask import Flask, request
+import gspread.exceptions
 from telegram import (
     Bot, Update, KeyboardButton, ReplyKeyboardMarkup,
     ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
@@ -701,14 +702,61 @@ def get_outlet_row_by_emp_id(emp_id):
     else:
         target_date = now.strftime("%d/%m/%Y")
 
-    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
-    sheet = gspread.authorize(creds).open(SHEET_NAME).worksheet(TAB_NAME_ROSTER)
-    records = sheet.get_all_records()
+    try:
+        creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
+        sheet = gspread.authorize(creds).open(SHEET_NAME).worksheet(TAB_NAME_ROSTER)
+        
+        # Try to get records, if header has empty cells, use alternative method
+        try:
+            records = sheet.get_all_records()
+        except gspread.exceptions.GSpreadException as e:
+            if "empty cells" in str(e):
+                # Alternative: use get_all_values and manually parse
+                all_values = sheet.get_all_values()
+                if len(all_values) < 2:
+                    print("Roster sheet has insufficient data")
+                    return None, None, None, None, None
+                
+                headers = all_values[0]
+                # Find the indices of the columns we need
+                try:
+                    emp_id_idx = headers.index("Employee ID")
+                    date_idx = headers.index("Date")
+                    outlet_idx = headers.index("Outlet")
+                    signin_idx = headers.index("Sign-In Time")
+                    signout_idx = headers.index("Sign-Out Time")
+                except ValueError as ve:
+                    print(f"Required column not found in headers: {ve}")
+                    return None, None, None, None, None
+                
+                # Search through data rows
+                for idx, row in enumerate(all_values[1:], start=2):
+                    if len(row) > max(emp_id_idx, date_idx) and \
+                       str(row[emp_id_idx]).strip() == emp_id and \
+                       str(row[date_idx]).strip() == target_date:
+                        outlet = str(row[outlet_idx]).strip() if len(row) > outlet_idx else ""
+                        signin = row[signin_idx] if len(row) > signin_idx else ""
+                        signout = row[signout_idx] if len(row) > signout_idx else ""
+                        return outlet, signin, signout, idx, sheet
+                
+                print(f"No matching record found for emp_id {emp_id} on date {target_date}")
+                return None, None, None, None, None
+            else:
+                raise
 
-    for idx, row in enumerate(records, start=2):
-        if str(row.get("Employee ID")).strip() == emp_id and str(row.get("Date")).strip() == target_date:
-            return str(row.get("Outlet")).strip(), row.get("Sign-In Time"), row.get("Sign-Out Time"), idx, sheet
-    return None, None, None, None, None
+        # Normal path when no header issues
+        for idx, row in enumerate(records, start=2):
+            if str(row.get("Employee ID")).strip() == emp_id and str(row.get("Date")).strip() == target_date:
+                return str(row.get("Outlet")).strip(), row.get("Sign-In Time"), row.get("Sign-Out Time"), idx, sheet
+                
+        print(f"No matching record found for emp_id {emp_id} on date {target_date}")
+        return None, None, None, None, None
+        
+    except Exception as e:
+        print(f"Error in get_outlet_row_by_emp_id: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None, None, None, None
 
 def get_outlet_coordinates(outlet_code):
     creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
