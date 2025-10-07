@@ -571,15 +571,20 @@ def extract_amount_from_text(text):
         traceback.print_exc()
         return None
 
-def save_allowance_to_sheet(emp_id, emp_name, outlet, trip_type, amount, extracted_text):
+def save_allowance_to_sheet(emp_id, emp_name, outlet, trip_type, amount, extracted_text, items_list=""):
     """Save allowance data to Google Sheet"""
     try:
         sheet = client.open_by_key(ALLOWANCE_SHEET_ID).worksheet(TAB_NAME_ALLOWANCE)
         
         headers = sheet.row_values(1)
         if not headers:
-            headers = ["Date", "Time", "Employee ID", "Employee Name", "Outlet", "Trip Type", "Amount", "Extracted Text"]
-            sheet.update('A1:H1', [headers])
+            headers = ["Date", "Time", "Employee ID", "Employee Name", "Outlet", 
+                      "Trip Type", "Amount", "Items Ordered", "Extracted Text"]
+            sheet.update('A1:I1', [headers])
+        elif len(headers) < 9:
+            # Update headers if Items Ordered column doesn't exist
+            sheet.update('A1:I1', [["Date", "Time", "Employee ID", "Employee Name", "Outlet", 
+                                    "Trip Type", "Amount", "Items Ordered", "Extracted Text"]])
         
         now = datetime.datetime.now(INDIA_TZ)
         row_data = [
@@ -590,11 +595,14 @@ def save_allowance_to_sheet(emp_id, emp_name, outlet, trip_type, amount, extract
             outlet,
             trip_type,
             amount,
+            items_list,  # New column for items
             extracted_text[:500]
         ]
         
         sheet.append_row(row_data)
         print(f"Saved allowance: {emp_name} - {trip_type} - ₹{amount}")
+        if items_list:
+            print(f"Items saved: {items_list[:200]}")
         return True
         
     except Exception as e:
@@ -602,6 +610,141 @@ def save_allowance_to_sheet(emp_id, emp_name, outlet, trip_type, amount, extract
         import traceback
         traceback.print_exc()
         return False
+
+def extract_items_from_text(text):
+    """Extract ordered items with quantities and prices from text"""
+    try:
+        print(f"\n=== EXTRACTING ITEMS ===")
+        print(f"Full text received:\n{text}\n")
+        
+        items = []
+        lines = text.split('\n')
+        
+        # Pattern 1: Instamart/Swiggy format - "4 x [Combo] Britannia Milk Bikis Biscuits ₹484.0"
+        # Pattern 2: Blinkit format - "Whole Farm Grocery Cashew\n500 g x 8\n₹6,000 ₹3,640"
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if not line:
+                i += 1
+                continue
+            
+            # Pattern 1: Single line with quantity x item name and price
+            # Example: "4 x [Combo] Britannia Milk Bikis Biscuits ₹484.0"
+            pattern1 = r'(\d+)\s*x\s*(.+?)\s*₹\s*([\d,]+(?:\.\d+)?)'
+            match1 = re.match(pattern1, line)
+            
+            if match1:
+                quantity = match1.group(1)
+                item_name = match1.group(2).strip()
+                price = match1.group(3).replace(',', '')
+                items.append({
+                    'name': item_name,
+                    'quantity': quantity,
+                    'price': float(price)
+                })
+                print(f"✓ Pattern 1 match: {quantity} x {item_name} - ₹{price}")
+                i += 1
+                continue
+            
+            # Pattern 2: Multi-line Blinkit format
+            # Line 1: Item name
+            # Line 2: quantity format like "500 g x 8"
+            # Line 3: prices like "₹6,000 ₹3,640" (original price, final price)
+            if i + 2 < len(lines):
+                next_line = lines[i + 1].strip()
+                price_line = lines[i + 2].strip()
+                
+                # Check if next line has quantity pattern
+                qty_pattern = r'.*?(\d+)\s*(?:g|kg|ml|l|pc|pcs)?\s*x\s*(\d+)'
+                qty_match = re.search(qty_pattern, next_line, re.IGNORECASE)
+                
+                if qty_match:
+                    # Extract prices from third line
+                    price_pattern = r'₹\s*([\d,]+(?:\.\d+)?)'
+                    prices = re.findall(price_pattern, price_line)
+                    
+                    if prices:
+                        item_name = line
+                        quantity = f"{qty_match.group(1)} x {qty_match.group(2)}"
+                        # Use the last price (final/discounted price)
+                        final_price = prices[-1].replace(',', '')
+                        
+                        items.append({
+                            'name': item_name,
+                            'quantity': quantity,
+                            'price': float(final_price)
+                        })
+                        print(f"✓ Pattern 2 match: {quantity} x {item_name} - ₹{final_price}")
+                        i += 3  # Skip the lines we just processed
+                        continue
+            
+            # Pattern 3: Item with price on same or next line (generic fallback)
+            # Look for item names followed by price indicators
+            combined_text = line
+            if i + 1 < len(lines):
+                combined_text += " " + lines[i + 1].strip()
+            
+            # Check if this looks like an item line (has letters and a price)
+            if re.search(r'[a-zA-Z]', line) and re.search(r'₹\s*[\d,]+', combined_text):
+                price_match = re.search(r'₹\s*([\d,]+(?:\.\d+)?)', combined_text)
+                if price_match:
+                    # Clean item name (remove price and extra symbols)
+                    item_name = re.sub(r'₹.*$', '', line).strip()
+                    item_name = re.sub(r'[✓✔]', '', item_name).strip()
+                    
+                    # Try to extract quantity if present
+                    qty_match = re.search(r'(\d+)\s*x\s*', item_name)
+                    quantity = qty_match.group(1) if qty_match else "1"
+                    
+                    if qty_match:
+                        item_name = re.sub(r'\d+\s*x\s*', '', item_name).strip()
+                    
+                    price = price_match.group(1).replace(',', '')
+                    
+                    # Skip if item name is too short or looks like a label
+                    if len(item_name) > 3 and not item_name.lower() in ['item', 'delivery', 'total', 'bill', 'fee', 'charge']:
+                        items.append({
+                            'name': item_name,
+                            'quantity': quantity,
+                            'price': float(price)
+                        })
+                        print(f"✓ Pattern 3 match: {quantity} x {item_name} - ₹{price}")
+            
+            i += 1
+        
+        # Deduplicate items (sometimes parsed multiple times)
+        unique_items = []
+        seen = set()
+        for item in items:
+            key = (item['name'].lower(), item['price'])
+            if key not in seen:
+                seen.add(key)
+                unique_items.append(item)
+        
+        print(f"\n✅ Total items extracted: {len(unique_items)}")
+        for item in unique_items:
+            print(f"  - {item['quantity']} x {item['name']} - ₹{item['price']}")
+        
+        return unique_items
+        
+    except Exception as e:
+        print(f"Error extracting items: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+def format_items_for_sheet(items):
+    """Format items list as a string for Google Sheets"""
+    if not items:
+        return ""
+    
+    formatted = []
+    for item in items:
+        formatted.append(f"{item['quantity']} x {item['name']} - ₹{item['price']}")
+    
+    return " | ".join(formatted)        
 
 # === Utility Functions ===
 def normalize_number(number):
@@ -2101,7 +2244,10 @@ def allowance_handle_contact(update: Update, context):
     })
     
     # Ask for trip type
-    keyboard = [["🏠➡️🏢 Going (To Work)", "🏢➡️🏠 Coming (From Work)"]]
+    keyboard = [
+        ["🏠➡️🏢 Going (To Work)", "🏢➡️🏠 Coming (From Work)"],
+        ["🛒 Blinkit/Instamart Order"]
+    ]
     update.message.reply_text(
         f"✅ Verified: {short_name}\n"
         f"🏢 Outlet: {outlet_code}\n\n"
@@ -2119,6 +2265,8 @@ def allowance_handle_trip_type(update: Update, context):
         trip_type = "Going"
     elif "Coming" in trip_text or "FROM" in trip_text:
         trip_type = "Coming"
+    elif "Blinkit" in trip_text or "blinkit" in trip_text.lower():
+        trip_type = "Blinkit"
     else:
         update.message.reply_text("❌ Please select a valid option.")
         return ALLOWANCE_ASK_TRIP_TYPE
@@ -2126,17 +2274,26 @@ def allowance_handle_trip_type(update: Update, context):
     context.user_data["trip_type"] = trip_type
     print(f"Trip type selected: {trip_type}")
     
-    update.message.reply_text(
-        f"✅ Trip Type: {trip_type}\n\n"
-        f"📸 Please upload a screenshot of your payment/allowance.\n"
-        f"The bot will automatically extract the amount from the image.",
-        reply_markup=ReplyKeyboardRemove()
-    )
+    if trip_type == "Blinkit":
+        prompt_text = (
+            f"✅ Trip Type: {trip_type}\n\n"
+            f"📸 Please upload a screenshot of your Blinkit/Instamart order.\n"
+            f"The bot will automatically extract:\n"
+            f"• Total amount\n"
+            f"• Items ordered with prices"
+        )
+    else:
+        prompt_text = (
+            f"✅ Trip Type: {trip_type}\n\n"
+            f"📸 Please upload a screenshot of your payment/allowance.\n"
+            f"The bot will automatically extract the amount from the image."
+        )
     
+    update.message.reply_text(prompt_text, reply_markup=ReplyKeyboardRemove())
     return ALLOWANCE_ASK_IMAGE
 
 def allowance_handle_image(update: Update, context):
-    """Handle allowance image upload and extract amount"""
+    """Handle allowance image upload and extract amount and items"""
     if not update.message.photo:
         update.message.reply_text("❌ Please upload a photo/screenshot.")
         return ALLOWANCE_ASK_IMAGE
@@ -2163,15 +2320,25 @@ def allowance_handle_image(update: Update, context):
         
         print(f"✅ Text extraction successful, length: {len(extracted_text)} characters")
         
+        trip_type = context.user_data["trip_type"]
+        
+        # Extract amount
         amount = extract_amount_from_text(extracted_text)
+        
+        # Extract items if trip type is Blinkit
+        items = []
+        items_formatted = ""
+        if trip_type == "Blinkit":
+            items = extract_items_from_text(extracted_text)
+            items_formatted = format_items_for_sheet(items)
         
         if amount is None:
             text_preview = extracted_text[:400] if len(extracted_text) > 400 else extracted_text
             processing_msg.edit_text(
-                f"❌ Could not identify the fare amount in the image.\n\n"
+                f"❌ Could not identify the total amount in the image.\n\n"
                 f"📄 Text extracted from image:\n{text_preview}\n\n"
                 f"💡 Tips:\n"
-                f"• Make sure the fare/amount is clearly visible\n"
+                f"• Make sure the total amount is clearly visible\n"
                 f"• Take a clear screenshot without blur\n"
                 f"• Ensure good lighting\n"
                 f"• Try uploading again"
@@ -2182,22 +2349,36 @@ def allowance_handle_image(update: Update, context):
             context.user_data["emp_id"],
             context.user_data["emp_name"],
             context.user_data["outlet"],
-            context.user_data["trip_type"],
+            trip_type,
             amount,
-            extracted_text
+            extracted_text,
+            items_formatted
         )
         
         if success:
-            processing_msg.edit_text(
-                f"✅ Allowance recorded successfully!\n\n"
-                f"👤 Employee: {context.user_data['short_name']}\n"
-                f"🏢 Outlet: {context.user_data['outlet']}\n"
-                f"🚗 Trip: {context.user_data['trip_type']}\n"
-                f"💰 Amount: ₹{amount:.2f}\n"
-                f"📅 Date: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d')}\n"
-                f"⏰ Time: {datetime.datetime.now(INDIA_TZ).strftime('%H:%M:%S')}\n\n"
-                f"Use /start to submit another allowance."
-            )
+            confirmation = [
+                f"✅ Allowance recorded successfully!\n",
+                f"👤 Employee: {context.user_data['short_name']}",
+                f"🏢 Outlet: {context.user_data['outlet']}",
+                f"🚗 Trip: {trip_type}",
+                f"💰 Total Amount: ₹{amount:.2f}",
+            ]
+            
+            # Add items to confirmation if Blinkit order
+            if trip_type == "Blinkit" and items:
+                confirmation.append(f"\n📦 Items Ordered ({len(items)}):")
+                for item in items[:5]:  # Show first 5 items to avoid message being too long
+                    confirmation.append(f"  • {item['quantity']} x {item['name']} - ₹{item['price']:.2f}")
+                if len(items) > 5:
+                    confirmation.append(f"  ... and {len(items) - 5} more items")
+            
+            confirmation.extend([
+                f"\n📅 Date: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d')}",
+                f"⏰ Time: {datetime.datetime.now(INDIA_TZ).strftime('%H:%M:%S')}",
+                f"\nUse /start to submit another allowance."
+            ])
+            
+            processing_msg.edit_text("\n".join(confirmation))
         else:
             processing_msg.edit_text(
                 "❌ Error saving to sheet. Please try again or contact admin."
