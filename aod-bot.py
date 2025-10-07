@@ -54,6 +54,8 @@ CREDS_FILE = "service_account.json"
 SHEET_NAME = "AOD Master App"
 TICKET_SHEET_ID = "1FYXr8Wz0ddN3mFi-0AQbI6J_noi2glPbJLh44CEMUnE"
 ALLOWANCE_SHEET_ID = "1XmKondedSs_c6PZflanfB8OFUsGxVoqi5pUPvscT8cs"
+TRAVEL_SHEET_ID = "1FYXr8Wz0ddN3mFi-0AQbI6J_noi2glPbJLh44CEMUnE"  # Travel Allowance sheet
+TAB_NAME_TRAVEL = "Travel Allowance"
 TAB_NAME_ROSTER = "Roster"
 TAB_NAME_OUTLETS = "Outlets"
 TAB_NAME_EMP_REGISTER = "EmployeeRegister"
@@ -571,57 +573,16 @@ def extract_amount_from_text(text):
         traceback.print_exc()
         return None
 
-def save_allowance_to_sheet(emp_id, emp_name, outlet, trip_type, amount, extracted_text, items_list=""):
-    """Save allowance data to Google Sheet"""
-    try:
-        sheet = client.open_by_key(ALLOWANCE_SHEET_ID).worksheet(TAB_NAME_ALLOWANCE)
-        
-        headers = sheet.row_values(1)
-        if not headers:
-            headers = ["Date", "Time", "Employee ID", "Employee Name", "Outlet", 
-                      "Trip Type", "Amount", "Items Ordered", "Extracted Text"]
-            sheet.update('A1:I1', [headers])
-        elif len(headers) < 9:
-            # Update headers if Items Ordered column doesn't exist
-            sheet.update('A1:I1', [["Date", "Time", "Employee ID", "Employee Name", "Outlet", 
-                                    "Trip Type", "Amount", "Items Ordered", "Extracted Text"]])
-        
-        now = datetime.datetime.now(INDIA_TZ)
-        row_data = [
-            now.strftime("%Y-%m-%d"),
-            now.strftime("%H:%M:%S"),
-            emp_id,
-            emp_name,
-            outlet,
-            trip_type,
-            amount,
-            items_list,  # New column for items
-            extracted_text[:500]
-        ]
-        
-        sheet.append_row(row_data)
-        print(f"Saved allowance: {emp_name} - {trip_type} - ₹{amount}")
-        if items_list:
-            print(f"Items saved: {items_list[:200]}")
-        return True
-        
-    except Exception as e:
-        print(f"Error saving to sheet: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+
 
 def extract_items_from_text(text):
-    """Extract ordered items with quantities and prices from text"""
+    """Extract ordered items with quantities and prices from text - IMPROVED VERSION"""
     try:
         print(f"\n=== EXTRACTING ITEMS ===")
         print(f"Full text received:\n{text}\n")
         
         items = []
         lines = text.split('\n')
-        
-        # Pattern 1: Instamart/Swiggy format - "4 x [Combo] Britannia Milk Bikis Biscuits ₹484.0"
-        # Pattern 2: Blinkit format - "Whole Farm Grocery Cashew\n500 g x 8\n₹6,000 ₹3,640"
         
         i = 0
         while i < len(lines):
@@ -630,44 +591,72 @@ def extract_items_from_text(text):
                 i += 1
                 continue
             
-            # Pattern 1: Single line with quantity x item name and price
-            # Example: "4 x [Combo] Britannia Milk Bikis Biscuits ₹484.0"
-            pattern1 = r'(\d+)\s*x\s*(.+?)\s*₹\s*([\d,]+(?:\.\d+)?)'
+            # Skip common non-item lines
+            skip_keywords = ['order', 'summary', 'arrived', 'download', 'invoice', 'item details', 
+                           'delivery', 'total', 'bill', 'mrp', 'discount', 'charge', 'help',
+                           'completed', 'rate now', 'how were', 'repeat order', 'view cart']
+            if any(keyword in line.lower() for keyword in skip_keywords):
+                i += 1
+                continue
+            
+            # Pattern 1: Instamart format - "4 x [Combo] Britannia Milk Bikis Biscuits ₹484.0"
+            pattern1 = r'^(\d+)\s*x\s*(.+?)\s*₹\s*([\d,]+(?:\.\d+)?)\s*$'
             match1 = re.match(pattern1, line)
             
             if match1:
                 quantity = match1.group(1)
                 item_name = match1.group(2).strip()
+                # Remove checkmarks and extra symbols
+                item_name = re.sub(r'^[✓✔\s]+', '', item_name).strip()
                 price = match1.group(3).replace(',', '')
+                
                 items.append({
                     'name': item_name,
                     'quantity': quantity,
                     'price': float(price)
                 })
-                print(f"✓ Pattern 1 match: {quantity} x {item_name} - ₹{price}")
+                print(f"✓ Pattern 1: {quantity} x {item_name} - ₹{price}")
                 i += 1
                 continue
             
-            # Pattern 2: Multi-line Blinkit format
-            # Line 1: Item name
-            # Line 2: quantity format like "500 g x 8"
-            # Line 3: prices like "₹6,000 ₹3,640" (original price, final price)
+            # Pattern 2: Blinkit multi-line format
+            # Line i: Item name (e.g., "Whole Farm Grocery Cashew")
+            # Line i+1: Quantity format (e.g., "500 g x 8")
+            # Line i+2: Prices (e.g., "₹6,000 ₹3,640")
+            
             if i + 2 < len(lines):
                 next_line = lines[i + 1].strip()
                 price_line = lines[i + 2].strip()
                 
-                # Check if next line has quantity pattern
-                qty_pattern = r'.*?(\d+)\s*(?:g|kg|ml|l|pc|pcs)?\s*x\s*(\d+)'
-                qty_match = re.search(qty_pattern, next_line, re.IGNORECASE)
+                # Check if next line contains quantity pattern like "500 g x 8" or "8 x 500g"
+                qty_patterns = [
+                    r'^\(?(\d+(?:-\d+)?)\s*(?:g|kg|ml|l|pc|pcs|nos?|pack)?\)?\s*x\s*(\d+)$',
+                    r'^(\d+)\s*x\s*\(?(\d+(?:-\d+)?)\s*(?:g|kg|ml|l|pc|pcs|nos?|pack)?\)?$',
+                    r'^(\d+)\s*x\s*$'
+                ]
+                
+                qty_match = None
+                for pattern in qty_patterns:
+                    qty_match = re.match(pattern, next_line, re.IGNORECASE)
+                    if qty_match:
+                        break
                 
                 if qty_match:
-                    # Extract prices from third line
+                    # Extract all prices from third line
                     price_pattern = r'₹\s*([\d,]+(?:\.\d+)?)'
                     prices = re.findall(price_pattern, price_line)
                     
                     if prices:
                         item_name = line
-                        quantity = f"{qty_match.group(1)} x {qty_match.group(2)}"
+                        # Remove checkmarks and clean up
+                        item_name = re.sub(r'^[✓✔\s]+', '', item_name).strip()
+                        
+                        # Build quantity string
+                        if len(qty_match.groups()) >= 2:
+                            quantity = f"{qty_match.group(1)} x {qty_match.group(2)}"
+                        else:
+                            quantity = qty_match.group(1)
+                        
                         # Use the last price (final/discounted price)
                         final_price = prices[-1].replace(',', '')
                         
@@ -676,54 +665,22 @@ def extract_items_from_text(text):
                             'quantity': quantity,
                             'price': float(final_price)
                         })
-                        print(f"✓ Pattern 2 match: {quantity} x {item_name} - ₹{final_price}")
-                        i += 3  # Skip the lines we just processed
+                        print(f"✓ Pattern 2: {quantity} x {item_name} - ₹{final_price}")
+                        i += 3  # Skip the 3 lines we just processed
                         continue
-            
-            # Pattern 3: Item with price on same or next line (generic fallback)
-            # Look for item names followed by price indicators
-            combined_text = line
-            if i + 1 < len(lines):
-                combined_text += " " + lines[i + 1].strip()
-            
-            # Check if this looks like an item line (has letters and a price)
-            if re.search(r'[a-zA-Z]', line) and re.search(r'₹\s*[\d,]+', combined_text):
-                price_match = re.search(r'₹\s*([\d,]+(?:\.\d+)?)', combined_text)
-                if price_match:
-                    # Clean item name (remove price and extra symbols)
-                    item_name = re.sub(r'₹.*$', '', line).strip()
-                    item_name = re.sub(r'[✓✔]', '', item_name).strip()
-                    
-                    # Try to extract quantity if present
-                    qty_match = re.search(r'(\d+)\s*x\s*', item_name)
-                    quantity = qty_match.group(1) if qty_match else "1"
-                    
-                    if qty_match:
-                        item_name = re.sub(r'\d+\s*x\s*', '', item_name).strip()
-                    
-                    price = price_match.group(1).replace(',', '')
-                    
-                    # Skip if item name is too short or looks like a label
-                    if len(item_name) > 3 and not item_name.lower() in ['item', 'delivery', 'total', 'bill', 'fee', 'charge']:
-                        items.append({
-                            'name': item_name,
-                            'quantity': quantity,
-                            'price': float(price)
-                        })
-                        print(f"✓ Pattern 3 match: {quantity} x {item_name} - ₹{price}")
             
             i += 1
         
-        # Deduplicate items (sometimes parsed multiple times)
+        # Remove duplicates
         unique_items = []
         seen = set()
         for item in items:
-            key = (item['name'].lower(), item['price'])
+            key = (item['name'].lower().strip(), item['price'])
             if key not in seen:
                 seen.add(key)
                 unique_items.append(item)
         
-        print(f"\n✅ Total items extracted: {len(unique_items)}")
+        print(f"\n✅ Total unique items extracted: {len(unique_items)}")
         for item in unique_items:
             print(f"  - {item['quantity']} x {item['name']} - ₹{item['price']}")
         
@@ -744,7 +701,110 @@ def format_items_for_sheet(items):
     for item in items:
         formatted.append(f"{item['quantity']} x {item['name']} - ₹{item['price']}")
     
-    return " | ".join(formatted)        
+    return " | ".join(formatted)  
+
+def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount):
+    """Save travel allowance (Going/Coming) to Travel Allowance sheet"""
+    try:
+        sheet = client.open_by_key(TRAVEL_SHEET_ID).worksheet(TAB_NAME_TRAVEL)
+        
+        # Verify headers
+        headers = sheet.row_values(1)
+        expected_headers = ["Travel ID", "Date", "Employee", "Outlet", "Going Amount", "Coming Amount"]
+        
+        if not headers or headers != expected_headers:
+            print("Setting up Travel Allowance sheet headers")
+            sheet.update('A1:F1', [expected_headers])
+        
+        current_date = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d")
+        
+        # Check if there's already a row for this employee on this date
+        all_records = sheet.get_all_records()
+        existing_row_index = None
+        
+        for idx, record in enumerate(all_records, start=2):  # start=2 because row 1 is headers
+            if (str(record.get("Date", "")).strip() == current_date and 
+                str(record.get("Employee", "")).strip().lower() == emp_name.lower()):
+                existing_row_index = idx
+                print(f"Found existing row at index {idx} for {emp_name} on {current_date}")
+                break
+        
+        if existing_row_index:
+            # Update existing row
+            if trip_type == "Going":
+                col = "E"  # Going Amount column
+            else:  # Coming
+                col = "F"  # Coming Amount column
+            
+            cell_address = f"{col}{existing_row_index}"
+            sheet.update(cell_address, [[amount]])
+            print(f"Updated {trip_type} amount (₹{amount}) in cell {cell_address}")
+            
+        else:
+            # Create new row
+            # Generate Travel ID (you can customize this format)
+            travel_id = f"TRV-{current_date}-{emp_id}"
+            
+            going_amount = amount if trip_type == "Going" else ""
+            coming_amount = amount if trip_type == "Coming" else ""
+            
+            row_data = [
+                travel_id,
+                current_date,
+                emp_name,
+                outlet,
+                going_amount,
+                coming_amount
+            ]
+            
+            sheet.append_row(row_data)
+            print(f"Created new travel row: {travel_id} - {emp_name} - {trip_type}: ₹{amount}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error saving to Travel Allowance sheet: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def save_blinkit_order(emp_id, emp_name, outlet, amount, items_list, extracted_text):
+    """Save Blinkit order to allowance sheet"""
+    try:
+        sheet = client.open_by_key(ALLOWANCE_SHEET_ID).worksheet(TAB_NAME_ALLOWANCE)
+        
+        headers = sheet.row_values(1)
+        expected_headers = ["Date", "Time", "Employee ID", "Employee Name", "Outlet", 
+                           "Order Type", "Amount", "Items Ordered", "Extracted Text"]
+        
+        if not headers:
+            sheet.update('A1:I1', [expected_headers])
+        elif len(headers) < 9:
+            sheet.update('A1:I1', [expected_headers])
+        
+        now = datetime.datetime.now(INDIA_TZ)
+        row_data = [
+            now.strftime("%Y-%m-%d"),
+            now.strftime("%H:%M:%S"),
+            emp_id,
+            emp_name,
+            outlet,
+            "Blinkit",  # Order Type
+            amount,
+            items_list,
+            extracted_text[:500]
+        ]
+        
+        sheet.append_row(row_data)
+        print(f"Saved Blinkit order: {emp_name} - ₹{amount}")
+        print(f"Items: {items_list[:200]}")
+        return True
+        
+    except Exception as e:
+        print(f"Error saving to allowance sheet: {e}")
+        import traceback
+        traceback.print_exc()
+        return False      
 
 # === Utility Functions ===
 def normalize_number(number):
@@ -2325,65 +2385,92 @@ def allowance_handle_image(update: Update, context):
         # Extract amount
         amount = extract_amount_from_text(extracted_text)
         
-        # Extract items if trip type is Blinkit
-        items = []
-        items_formatted = ""
-        if trip_type == "Blinkit":
-            items = extract_items_from_text(extracted_text)
-            items_formatted = format_items_for_sheet(items)
-        
         if amount is None:
             text_preview = extracted_text[:400] if len(extracted_text) > 400 else extracted_text
             processing_msg.edit_text(
-                f"❌ Could not identify the total amount in the image.\n\n"
-                f"📄 Text extracted from image:\n{text_preview}\n\n"
+                f"❌ Could not identify the amount in the image.\n\n"
+                f"📄 Text extracted:\n{text_preview}\n\n"
                 f"💡 Tips:\n"
-                f"• Make sure the total amount is clearly visible\n"
+                f"• Make sure the amount is clearly visible\n"
                 f"• Take a clear screenshot without blur\n"
-                f"• Ensure good lighting\n"
                 f"• Try uploading again"
             )
             return ALLOWANCE_ASK_IMAGE
         
-        success = save_allowance_to_sheet(
-            context.user_data["emp_id"],
-            context.user_data["emp_name"],
-            context.user_data["outlet"],
-            trip_type,
-            amount,
-            extracted_text,
-            items_formatted
-        )
-        
-        if success:
-            confirmation = [
-                f"✅ Allowance recorded successfully!\n",
-                f"👤 Employee: {context.user_data['short_name']}",
-                f"🏢 Outlet: {context.user_data['outlet']}",
-                f"🚗 Trip: {trip_type}",
-                f"💰 Total Amount: ₹{amount:.2f}",
-            ]
+        # Handle based on trip type
+        if trip_type == "Blinkit":
+            # Extract items for Blinkit orders
+            items = extract_items_from_text(extracted_text)
+            items_formatted = format_items_for_sheet(items)
             
-            # Add items to confirmation if Blinkit order
-            if trip_type == "Blinkit" and items:
-                confirmation.append(f"\n📦 Items Ordered ({len(items)}):")
-                for item in items[:5]:  # Show first 5 items to avoid message being too long
-                    confirmation.append(f"  • {item['quantity']} x {item['name']} - ₹{item['price']:.2f}")
-                if len(items) > 5:
-                    confirmation.append(f"  ... and {len(items) - 5} more items")
-            
-            confirmation.extend([
-                f"\n📅 Date: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d')}",
-                f"⏰ Time: {datetime.datetime.now(INDIA_TZ).strftime('%H:%M:%S')}",
-                f"\nUse /start to submit another allowance."
-            ])
-            
-            processing_msg.edit_text("\n".join(confirmation))
-        else:
-            processing_msg.edit_text(
-                "❌ Error saving to sheet. Please try again or contact admin."
+            success = save_blinkit_order(
+                context.user_data["emp_id"],
+                context.user_data["emp_name"],
+                context.user_data["outlet"],
+                amount,
+                items_formatted,
+                extracted_text
             )
-            return ALLOWANCE_ASK_IMAGE
+            
+            if success:
+                confirmation = [
+                    f"✅ Blinkit order recorded successfully!\n",
+                    f"👤 Employee: {context.user_data['short_name']}",
+                    f"🏢 Outlet: {context.user_data['outlet']}",
+                    f"💰 Total Amount: ₹{amount:.2f}",
+                ]
+                
+                # Add items to confirmation
+                if items:
+                    confirmation.append(f"\n📦 Items Ordered ({len(items)}):")
+                    for item in items[:8]:  # Show first 8 items
+                        confirmation.append(f"  • {item['quantity']} x {item['name']} - ₹{item['price']:.2f}")
+                    if len(items) > 8:
+                        confirmation.append(f"  ... and {len(items) - 8} more items")
+                else:
+                    confirmation.append(f"\n⚠️ Note: Could not extract item details, but amount saved.")
+                
+                confirmation.extend([
+                    f"\n📅 Date: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d')}",
+                    f"⏰ Time: {datetime.datetime.now(INDIA_TZ).strftime('%H:%M:%S')}",
+                    f"\nUse /start to submit another order."
+                ])
+                
+                processing_msg.edit_text("\n".join(confirmation))
+            else:
+                processing_msg.edit_text(
+                    "❌ Error saving to sheet. Please try again or contact admin."
+                )
+                return ALLOWANCE_ASK_IMAGE
+        
+        else:
+            # Save to Travel Allowance sheet for Going/Coming
+            success = save_travel_allowance(
+                context.user_data["emp_id"],
+                context.user_data["emp_name"],
+                context.user_data["outlet"],
+                trip_type,
+                amount
+            )
+            
+            if success:
+                confirmation = [
+                    f"✅ Travel allowance recorded successfully!\n",
+                    f"👤 Employee: {context.user_data['short_name']}",
+                    f"🏢 Outlet: {context.user_data['outlet']}",
+                    f"🚗 Trip: {trip_type}",
+                    f"💰 Amount: ₹{amount:.2f}",
+                    f"\n📅 Date: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d')}",
+                    f"⏰ Time: {datetime.datetime.now(INDIA_TZ).strftime('%H:%M:%S')}",
+                    f"\nUse /start to submit another allowance."
+                ]
+                
+                processing_msg.edit_text("\n".join(confirmation))
+            else:
+                processing_msg.edit_text(
+                    "❌ Error saving to sheet. Please try again or contact admin."
+                )
+                return ALLOWANCE_ASK_IMAGE
         
         return ConversationHandler.END
         
