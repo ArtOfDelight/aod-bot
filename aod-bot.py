@@ -6,6 +6,10 @@ import uuid
 import hashlib
 import time
 import threading
+import google.generativeai as genai
+import json
+from PIL import Image
+import io
 from werkzeug.utils import secure_filename
 from zoneinfo import ZoneInfo
 from flask import Flask, request
@@ -55,6 +59,7 @@ SHEET_NAME = "AOD Master App"
 TICKET_SHEET_ID = "1FYXr8Wz0ddN3mFi-0AQbI6J_noi2glPbJLh44CEMUnE"
 ALLOWANCE_SHEET_ID = "1XmKondedSs_c6PZflanfB8OFUsGxVoqi5pUPvscT8cs"
 TRAVEL_SHEET_ID = "1FYXr8Wz0ddN3mFi-0AQbI6J_noi2glPbJLh44CEMUnE"  # Travel Allowance sheet
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Add this after ALLOWANCE_SHEET_ID
 TAB_NAME_TRAVEL = "Travel Allowance"
 TAB_NAME_ROSTER = "Roster"
 TAB_NAME_OUTLETS = "Outlets"
@@ -143,6 +148,19 @@ try:
 except Exception as e:
     print(f"Warning: Google Vision API not initialized: {e}")
     vision_client = None
+
+# === Google Gemini AI Setup ===
+try:
+    if GEMINI_API_KEY:
+        genai.configure(api_key=GEMINI_API_KEY)
+        gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+        print("Google Gemini AI initialized successfully")
+    else:
+        print("Warning: GEMINI_API_KEY not found. AI parsing will not be available.")
+        gemini_model = None
+except Exception as e:
+    print(f"Warning: Google Gemini AI not initialized: {e}")
+    gemini_model = None    
 
 # === Google Drive Setup ===
 def setup_drive():
@@ -573,7 +591,146 @@ def extract_amount_from_text(text):
         traceback.print_exc()
         return None
 
+def extract_order_details_with_ai(image_bytes, order_type="Blinkit"):
+    """
+    Use Google Gemini AI to extract order details from image
+    Returns: dict with 'total_amount', 'items' (list of dicts with name, quantity, price)
+    """
+    try:
+        if not gemini_model:
+            print("⚠️ Gemini AI not available, falling back to regex extraction")
+            return extract_order_details_fallback(image_bytes, order_type)
+        
+        print(f"\n=== AI EXTRACTION STARTED ({order_type}) ===")
+        
+        # Convert bytes to PIL Image
+        image = Image.open(io.BytesIO(image_bytes))
+        
+        # Create prompt based on order type
+        if order_type == "Blinkit":
+            prompt = """
+You are analyzing a food delivery or grocery order screenshot (Blinkit, Instamart, Swiggy, etc.).
 
+Please extract the following information and return it as a JSON object:
+
+{
+  "total_amount": <final total amount in rupees as a number>,
+  "items": [
+    {
+      "name": "<item name>",
+      "quantity": "<quantity with unit, e.g., '8 x 500g' or '4'>",
+      "price": <final price in rupees as a number>
+    }
+  ]
+}
+
+Rules:
+1. For total_amount: Extract the FINAL/GRAND TOTAL amount (not item total, MRP, or subtotal)
+2. For items: Extract ALL ordered items with their quantities and FINAL prices (after discounts)
+3. Skip delivery fees, handling charges, or other non-item charges
+4. If quantity has units (g, kg, ml, etc.), include them
+5. Clean up item names (remove checkmarks, extra symbols)
+6. Return ONLY valid JSON, no additional text
+
+If you cannot extract the information, return:
+{"error": "Could not extract order details"}
+"""
+        else:  # Travel/Going/Coming
+            prompt = """
+You are analyzing a payment receipt screenshot (auto, cab, UPI payment, etc.).
+
+Please extract the payment amount and return it as a JSON object:
+
+{
+  "total_amount": <payment amount in rupees as a number>
+}
+
+Rules:
+1. Extract the main payment/fare amount
+2. Look for keywords like: fare, total, paid, amount, charge
+3. Return the largest meaningful amount if multiple amounts are present
+4. Return ONLY valid JSON, no additional text
+
+If you cannot extract the amount, return:
+{"error": "Could not extract amount"}
+"""
+        
+        # Generate content with image and prompt
+        response = gemini_model.generate_content([prompt, image])
+        
+        print(f"AI Response received")
+        print(f"Response text: {response.text[:500]}")
+        
+        # Parse JSON response
+        response_text = response.text.strip()
+        
+        # Remove markdown code blocks if present
+        if response_text.startswith("```json"):
+            response_text = response_text.replace("```json", "").replace("```", "").strip()
+        elif response_text.startswith("```"):
+            response_text = response_text.replace("```", "").strip()
+        
+        result = json.loads(response_text)
+        
+        if "error" in result:
+            print(f"❌ AI could not extract data: {result['error']}")
+            return None
+        
+        # Validate and format result
+        if "total_amount" not in result:
+            print("❌ No total_amount in AI response")
+            return None
+        
+        # Ensure items list exists for Blinkit orders
+        if order_type == "Blinkit" and "items" not in result:
+            result["items"] = []
+        
+        print(f"✅ AI Extraction successful!")
+        print(f"   Total Amount: ₹{result['total_amount']}")
+        if order_type == "Blinkit" and result.get("items"):
+            print(f"   Items extracted: {len(result['items'])}")
+            for item in result["items"][:3]:
+                print(f"     - {item['quantity']} x {item['name']} - ₹{item['price']}")
+        
+        return result
+        
+    except json.JSONDecodeError as e:
+        print(f"❌ Failed to parse AI response as JSON: {e}")
+        print(f"Response was: {response.text}")
+        return None
+    except Exception as e:
+        print(f"❌ Error in AI extraction: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def extract_order_details_fallback(image_bytes, order_type):
+    """
+    Fallback to Vision API + regex if Gemini AI is not available
+    """
+    try:
+        print("Using fallback Vision API extraction")
+        extracted_text = extract_text_from_image(image_bytes)
+        
+        if not extracted_text:
+            return None
+        
+        amount = extract_amount_from_text(extracted_text)
+        
+        if amount is None:
+            return None
+        
+        result = {"total_amount": amount}
+        
+        if order_type == "Blinkit":
+            items = extract_items_from_text(extracted_text)
+            result["items"] = items
+        
+        return result
+        
+    except Exception as e:
+        print(f"Fallback extraction failed: {e}")
+        return None
 
 def extract_items_from_text(text):
     """Extract ordered items with quantities and prices from text - IMPROVED VERSION"""
@@ -2353,55 +2510,50 @@ def allowance_handle_trip_type(update: Update, context):
     return ALLOWANCE_ASK_IMAGE
 
 def allowance_handle_image(update: Update, context):
-    """Handle allowance image upload and extract amount and items"""
+    """Handle allowance image upload with AI-powered extraction"""
     if not update.message.photo:
         update.message.reply_text("❌ Please upload a photo/screenshot.")
         return ALLOWANCE_ASK_IMAGE
     
     try:
-        processing_msg = update.message.reply_text("⏳ Processing image...")
+        processing_msg = update.message.reply_text("⏳ Processing image with AI...")
         
         photo = update.message.photo[-1]
         print(f"Photo file_id: {photo.file_id}, file_size: {photo.file_size}")
         
+        # Download image
         file = photo.get_file()
         image_bytes = file.download_as_bytearray()
         
-        print("Extracting text from image using Google Vision API...")
-        extracted_text = extract_text_from_image(bytes(image_bytes))
-        
-        if not extracted_text:
-            print("❌ No text extracted from image")
-            processing_msg.edit_text(
-                "❌ Could not extract any text from the image.\n"
-                "Please make sure the image is clear and try again."
-            )
-            return ALLOWANCE_ASK_IMAGE
-        
-        print(f"✅ Text extraction successful, length: {len(extracted_text)} characters")
-        
         trip_type = context.user_data["trip_type"]
         
-        # Extract amount
-        amount = extract_amount_from_text(extracted_text)
+        # Use AI to extract details
+        result = extract_order_details_with_ai(bytes(image_bytes), trip_type)
         
-        if amount is None:
-            text_preview = extracted_text[:400] if len(extracted_text) > 400 else extracted_text
+        if not result or "total_amount" not in result:
             processing_msg.edit_text(
-                f"❌ Could not identify the amount in the image.\n\n"
-                f"📄 Text extracted:\n{text_preview}\n\n"
-                f"💡 Tips:\n"
-                f"• Make sure the amount is clearly visible\n"
-                f"• Take a clear screenshot without blur\n"
-                f"• Try uploading again"
+                "❌ Could not extract information from the image.\n\n"
+                "💡 Tips:\n"
+                "• Make sure the image is clear and not blurry\n"
+                "• Ensure good lighting\n"
+                "• The total amount should be visible\n"
+                "• Try taking the screenshot again"
             )
             return ALLOWANCE_ASK_IMAGE
+        
+        amount = result["total_amount"]
         
         # Handle based on trip type
         if trip_type == "Blinkit":
-            # Extract items for Blinkit orders
-            items = extract_items_from_text(extracted_text)
+            items = result.get("items", [])
             items_formatted = format_items_for_sheet(items)
+            
+            # Get extracted text for backup (optional)
+            extracted_text_backup = ""
+            try:
+                extracted_text_backup = extract_text_from_image(bytes(image_bytes))
+            except:
+                pass
             
             success = save_blinkit_order(
                 context.user_data["emp_id"],
@@ -2409,7 +2561,7 @@ def allowance_handle_image(update: Update, context):
                 context.user_data["outlet"],
                 amount,
                 items_formatted,
-                extracted_text
+                extracted_text_backup
             )
             
             if success:
@@ -2420,11 +2572,13 @@ def allowance_handle_image(update: Update, context):
                     f"💰 Total Amount: ₹{amount:.2f}",
                 ]
                 
-                # Add items to confirmation
                 if items:
                     confirmation.append(f"\n📦 Items Ordered ({len(items)}):")
-                    for item in items[:8]:  # Show first 8 items
-                        confirmation.append(f"  • {item['quantity']} x {item['name']} - ₹{item['price']:.2f}")
+                    for item in items[:8]:
+                        item_name = item.get('name', 'Unknown')
+                        item_qty = item.get('quantity', '1')
+                        item_price = item.get('price', 0)
+                        confirmation.append(f"  • {item_qty} x {item_name} - ₹{item_price:.2f}")
                     if len(items) > 8:
                         confirmation.append(f"  ... and {len(items) - 8} more items")
                 else:
@@ -2433,6 +2587,7 @@ def allowance_handle_image(update: Update, context):
                 confirmation.extend([
                     f"\n📅 Date: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d')}",
                     f"⏰ Time: {datetime.datetime.now(INDIA_TZ).strftime('%H:%M:%S')}",
+                    f"\n✨ Extracted by AI",
                     f"\nUse /start to submit another order."
                 ])
                 
@@ -2462,6 +2617,7 @@ def allowance_handle_image(update: Update, context):
                     f"💰 Amount: ₹{amount:.2f}",
                     f"\n📅 Date: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d')}",
                     f"⏰ Time: {datetime.datetime.now(INDIA_TZ).strftime('%H:%M:%S')}",
+                    f"\n✨ Extracted by AI",
                     f"\nUse /start to submit another allowance."
                 ]
                 
