@@ -9,6 +9,8 @@ import threading
 from werkzeug.utils import secure_filename
 from zoneinfo import ZoneInfo
 from flask import Flask, request
+from google.cloud import vision
+from google.oauth2 import service_account
 import gspread.exceptions
 from telegram import (
     Bot, Update, KeyboardButton, ReplyKeyboardMarkup,
@@ -51,6 +53,7 @@ SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/au
 CREDS_FILE = "service_account.json"
 SHEET_NAME = "AOD Master App"
 TICKET_SHEET_ID = "1FYXr8Wz0ddN3mFi-0AQbI6J_noi2glPbJLh44CEMUnE"
+ALLOWANCE_SHEET_ID = "1XmKondedSs_c6PZflanfB8OFUsGxVoqi5pUPvscT8cs"
 TAB_NAME_ROSTER = "Roster"
 TAB_NAME_OUTLETS = "Outlets"
 TAB_NAME_EMP_REGISTER = "EmployeeRegister"
@@ -59,6 +62,7 @@ TAB_CHECKLIST = "ChecklistQuestions"
 TAB_RESPONSES = "ChecklistResponses"
 TAB_SUBMISSIONS = "ChecklistSubmissions"
 TAB_TICKETS = "Tickets"
+TAB_NAME_ALLOWANCE = "allowance"
 LOCATION_TOLERANCE_METERS = 50
 IMAGE_FOLDER = "checklist"
 TICKET_FOLDER = "tickets"
@@ -129,6 +133,15 @@ except Exception as e:
     print(f"Failed to initialize Google Sheets client: {e}")
     raise
 
+# === Google Vision API Setup ===
+try:
+    vision_creds = service_account.Credentials.from_service_account_file(CREDS_FILE)
+    vision_client = vision.ImageAnnotatorClient(credentials=vision_creds)
+    print("Google Vision API client initialized successfully")
+except Exception as e:
+    print(f"Warning: Google Vision API not initialized: {e}")
+    vision_client = None
+
 # === Google Drive Setup ===
 def setup_drive():
     try:
@@ -177,7 +190,8 @@ drive = setup_drive()
 # === States ===
 ASK_ACTION, ASK_PHONE, ASK_LOCATION = range(3)
 CHECKLIST_ASK_CONTACT, CHECKLIST_ASK_SLOT, CHECKLIST_ASK_QUESTION, CHECKLIST_ASK_IMAGE = range(10, 14)
-TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_SUBTYPE, TICKET_ASK_ISSUE = range(20, 24)  # Added TICKET_ASK_SUBTYPE
+TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_SUBTYPE, TICKET_ASK_ISSUE = range(20, 24),
+ALLOWANCE_ASK_CONTACT, ALLOWANCE_ASK_TRIP_TYPE, ALLOWANCE_ASK_IMAGE = range(30, 33)  # Added TICKET_ASK_SUBTYPE
 
 # === Checklist Reminder Functions ===
 def send_checklist_reminder_to_groups(slot):
@@ -418,6 +432,176 @@ def reminder_worker():
 # Start the reminder worker thread
 reminder_thread = threading.Thread(target=reminder_worker, daemon=True)
 reminder_thread.start()
+
+# === Allowance Functions ===
+def extract_text_from_image(image_bytes):
+    """Extract text from image using Google Vision API"""
+    try:
+        if vision_client is None:
+            print("Vision API not initialized")
+            return ""
+        
+        image = vision.Image(content=image_bytes)
+        response = vision_client.text_detection(image=image)
+        texts = response.text_annotations
+        
+        if texts:
+            full_text = texts[0].description
+            print(f"Extracted text: {full_text}")
+            return full_text
+        else:
+            print("No text found in image")
+            return ""
+            
+    except Exception as e:
+        print(f"Error extracting text from image: {e}")
+        import traceback
+        traceback.print_exc()
+        return ""
+
+def extract_amount_from_text(text):
+    """Extract monetary amount from text - Smart context-aware extraction"""
+    try:
+        print(f"\n=== EXTRACTING AMOUNT ===")
+        print(f"Full text received:\n{text}\n")
+        
+        # PRIORITY 1: Look for amounts that start with ₹ symbol
+        rupee_pattern = r'₹\s*(\d+(?:,\d+)*(?:\.\d+)?)'
+        rupee_matches = list(re.finditer(rupee_pattern, text))
+        
+        if rupee_matches:
+            rupee_amounts = []
+            for match in rupee_matches:
+                amount_str = match.group(1).replace(',', '')
+                try:
+                    amount = float(amount_str)
+                    rupee_amounts.append(amount)
+                    print(f"Found ₹ amount: {amount}")
+                except ValueError:
+                    continue
+            
+            if rupee_amounts:
+                max_amount = max(rupee_amounts)
+                print(f"✅ All ₹ amounts found: {rupee_amounts}")
+                print(f"✅ Returning largest ₹ amount: {max_amount}")
+                return max_amount
+        
+        print("⚠️ No ₹ symbol found, using context-aware extraction...")
+        
+        # PRIORITY 2: Context-aware extraction
+        lines = text.split('\n')
+        context_keywords = [
+            'oneway', 'one way', 'auto', 'ride', 'fare', 'total', 'pay', 
+            'paid', 'booking', 'amount', 'charge', 'cost'
+        ]
+        
+        candidates = []
+        
+        for i, line in enumerate(lines):
+            line_lower = line.lower().strip()
+            
+            if not line_lower:
+                continue
+            
+            has_context = any(keyword in line_lower for keyword in context_keywords)
+            
+            if i > 0:
+                prev_line_lower = lines[i-1].lower().strip()
+                has_context = has_context or any(keyword in prev_line_lower for keyword in context_keywords)
+            if i < len(lines) - 1:
+                next_line_lower = lines[i+1].lower().strip()
+                has_context = has_context or any(keyword in next_line_lower for keyword in context_keywords)
+            
+            if has_context or i < 10:
+                number_pattern = r'\b(\d{1,5}(?:\.\d{1,2})?)\b'
+                matches = re.finditer(number_pattern, line)
+                
+                for match in matches:
+                    num_str = match.group(1)
+                    surrounding = line[max(0, match.start()-5):min(len(line), match.end()+5)]
+                    
+                    if ':' in surrounding or 'am' in surrounding.lower() or 'pm' in surrounding.lower():
+                        continue
+                    if any(month in line_lower for month in ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']):
+                        continue
+                    if 'km' in line_lower or 'meter' in line_lower or 'm' in surrounding.lower():
+                        continue
+                    
+                    try:
+                        num_val = float(num_str)
+                        if num_val < 10 or num_val > 10000:
+                            continue
+                        
+                        candidates.append({
+                            'amount': num_val,
+                            'line': line.strip(),
+                            'line_num': i,
+                            'has_keyword': has_context
+                        })
+                        print(f"Candidate found: ₹{num_val} in line {i}: '{line.strip()}'")
+                    except ValueError:
+                        continue
+        
+        if not candidates:
+            print("❌ No candidate amounts found")
+            return None
+        
+        keyword_candidates = [c for c in candidates if c['has_keyword']]
+        early_line_candidates = [c for c in candidates if c['line_num'] < 10]
+        
+        if keyword_candidates:
+            best = max(keyword_candidates, key=lambda x: x['amount'])
+            print(f"✅ Selected amount with keyword context: ₹{best['amount']}")
+            return best['amount']
+        elif early_line_candidates:
+            best = max(early_line_candidates, key=lambda x: x['amount'])
+            print(f"✅ Selected amount from early lines: ₹{best['amount']}")
+            return best['amount']
+        elif candidates:
+            best = max(candidates, key=lambda x: x['amount'])
+            print(f"✅ Selected largest candidate amount: ₹{best['amount']}")
+            return best['amount']
+        
+        print("❌ No valid amounts found")
+        return None
+            
+    except Exception as e:
+        print(f"Error extracting amount: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def save_allowance_to_sheet(emp_id, emp_name, outlet, trip_type, amount, extracted_text):
+    """Save allowance data to Google Sheet"""
+    try:
+        sheet = client.open_by_key(ALLOWANCE_SHEET_ID).worksheet(TAB_NAME_ALLOWANCE)
+        
+        headers = sheet.row_values(1)
+        if not headers:
+            headers = ["Date", "Time", "Employee ID", "Employee Name", "Outlet", "Trip Type", "Amount", "Extracted Text"]
+            sheet.update('A1:H1', [headers])
+        
+        now = datetime.datetime.now(INDIA_TZ)
+        row_data = [
+            now.strftime("%Y-%m-%d"),
+            now.strftime("%H:%M:%S"),
+            emp_id,
+            emp_name,
+            outlet,
+            trip_type,
+            amount,
+            extracted_text[:500]
+        ]
+        
+        sheet.append_row(row_data)
+        print(f"Saved allowance: {emp_name} - {trip_type} - ₹{amount}")
+        return True
+        
+    except Exception as e:
+        print(f"Error saving to sheet: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 # === Utility Functions ===
 def normalize_number(number):
@@ -911,7 +1095,8 @@ def start(update: Update, context):
         [InlineKeyboardButton("🟢 Sign In", callback_data="signin")],
         [InlineKeyboardButton("🔴 Sign Out", callback_data="signout")],
         [InlineKeyboardButton("📋 Fill Checklist", callback_data="checklist")],
-        [InlineKeyboardButton("🎫 Raise Ticket", callback_data="ticket")]
+        [InlineKeyboardButton("🎫 Raise Ticket", callback_data="ticket")],
+        [InlineKeyboardButton("💰 Submit Allowance", callback_data="allowance")]  # NEW LINE
     ])
     update.message.reply_text("Welcome! What would you like to do today?", reply_markup=buttons)
     return ASK_ACTION
@@ -928,6 +1113,9 @@ def action_selected(update: Update, context):
     elif query.data == "ticket":
         query.message.reply_text("Please verify your phone number to raise a ticket:", reply_markup=markup)
         return TICKET_ASK_CONTACT
+    elif query.data == "allowance":  # NEW BLOCK
+        query.message.reply_text("Please verify your phone number to submit allowance:", reply_markup=markup)
+        return ALLOWANCE_ASK_CONTACT
     query.message.reply_text("Please verify your phone number:", reply_markup=markup)
     return ASK_PHONE
 
@@ -1872,6 +2060,161 @@ def ticket_handle_issue(update: Update, context):
     update.message.reply_text(confirmation_message, reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
+# === Allowance Handlers ===
+def allowance_handle_contact(update: Update, context):
+    """Handle contact verification for allowance"""
+    print("Handling allowance contact verification")
+    if not update.message.contact:
+        update.message.reply_text("❌ Please use the button to send your contact.")
+        return ALLOWANCE_ASK_CONTACT
+    
+    phone = normalize_number(update.message.contact.phone_number)
+    emp_name, outlet_code = get_employee_info(phone)
+    
+    if emp_name == "Unknown" or not outlet_code:
+        update.message.reply_text(
+            "❌ You're not rostered today or not registered.\n"
+            "Please contact your manager.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+    
+    # Get employee ID
+    emp_id = ""
+    try:
+        emp_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
+        emp_records = emp_sheet.get_all_records()
+        for row in emp_records:
+            row_phone = normalize_number(str(row.get("Phone Number", "")))
+            if row_phone == phone:
+                emp_id = str(row.get("Employee ID", ""))
+                short_name = str(row.get("Short Name", ""))
+                break
+    except:
+        short_name = emp_name
+    
+    context.user_data.update({
+        "emp_name": emp_name,
+        "emp_id": emp_id,
+        "short_name": short_name,
+        "outlet": outlet_code
+    })
+    
+    # Ask for trip type
+    keyboard = [["🏠➡️🏢 Going (To Work)", "🏢➡️🏠 Coming (From Work)"]]
+    update.message.reply_text(
+        f"✅ Verified: {short_name}\n"
+        f"🏢 Outlet: {outlet_code}\n\n"
+        f"🚗 Is this allowance for going TO work or coming FROM work?",
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    )
+    
+    return ALLOWANCE_ASK_TRIP_TYPE
+
+def allowance_handle_trip_type(update: Update, context):
+    """Handle trip type selection"""
+    trip_text = update.message.text
+    
+    if "Going" in trip_text or "TO" in trip_text:
+        trip_type = "Going"
+    elif "Coming" in trip_text or "FROM" in trip_text:
+        trip_type = "Coming"
+    else:
+        update.message.reply_text("❌ Please select a valid option.")
+        return ALLOWANCE_ASK_TRIP_TYPE
+    
+    context.user_data["trip_type"] = trip_type
+    print(f"Trip type selected: {trip_type}")
+    
+    update.message.reply_text(
+        f"✅ Trip Type: {trip_type}\n\n"
+        f"📸 Please upload a screenshot of your payment/allowance.\n"
+        f"The bot will automatically extract the amount from the image.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    
+    return ALLOWANCE_ASK_IMAGE
+
+def allowance_handle_image(update: Update, context):
+    """Handle allowance image upload and extract amount"""
+    if not update.message.photo:
+        update.message.reply_text("❌ Please upload a photo/screenshot.")
+        return ALLOWANCE_ASK_IMAGE
+    
+    try:
+        processing_msg = update.message.reply_text("⏳ Processing image...")
+        
+        photo = update.message.photo[-1]
+        print(f"Photo file_id: {photo.file_id}, file_size: {photo.file_size}")
+        
+        file = photo.get_file()
+        image_bytes = file.download_as_bytearray()
+        
+        print("Extracting text from image using Google Vision API...")
+        extracted_text = extract_text_from_image(bytes(image_bytes))
+        
+        if not extracted_text:
+            print("❌ No text extracted from image")
+            processing_msg.edit_text(
+                "❌ Could not extract any text from the image.\n"
+                "Please make sure the image is clear and try again."
+            )
+            return ALLOWANCE_ASK_IMAGE
+        
+        print(f"✅ Text extraction successful, length: {len(extracted_text)} characters")
+        
+        amount = extract_amount_from_text(extracted_text)
+        
+        if amount is None:
+            text_preview = extracted_text[:400] if len(extracted_text) > 400 else extracted_text
+            processing_msg.edit_text(
+                f"❌ Could not identify the fare amount in the image.\n\n"
+                f"📄 Text extracted from image:\n{text_preview}\n\n"
+                f"💡 Tips:\n"
+                f"• Make sure the fare/amount is clearly visible\n"
+                f"• Take a clear screenshot without blur\n"
+                f"• Ensure good lighting\n"
+                f"• Try uploading again"
+            )
+            return ALLOWANCE_ASK_IMAGE
+        
+        success = save_allowance_to_sheet(
+            context.user_data["emp_id"],
+            context.user_data["emp_name"],
+            context.user_data["outlet"],
+            context.user_data["trip_type"],
+            amount,
+            extracted_text
+        )
+        
+        if success:
+            processing_msg.edit_text(
+                f"✅ Allowance recorded successfully!\n\n"
+                f"👤 Employee: {context.user_data['short_name']}\n"
+                f"🏢 Outlet: {context.user_data['outlet']}\n"
+                f"🚗 Trip: {context.user_data['trip_type']}\n"
+                f"💰 Amount: ₹{amount:.2f}\n"
+                f"📅 Date: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d')}\n"
+                f"⏰ Time: {datetime.datetime.now(INDIA_TZ).strftime('%H:%M:%S')}\n\n"
+                f"Use /start to submit another allowance."
+            )
+        else:
+            processing_msg.edit_text(
+                "❌ Error saving to sheet. Please try again or contact admin."
+            )
+            return ALLOWANCE_ASK_IMAGE
+        
+        return ConversationHandler.END
+        
+    except Exception as e:
+        print(f"Error processing allowance image: {e}")
+        import traceback
+        traceback.print_exc()
+        update.message.reply_text(
+            "❌ Error processing image. Please try again or contact admin."
+        )
+        return ALLOWANCE_ASK_IMAGE
+
 def cleanup_file_safely(file_path):
     """Safely delete a file with multiple attempts and proper error handling"""
     if not file_path or not os.path.exists(file_path):
@@ -1988,6 +2331,7 @@ def health_check():
     return "AOD Bot is running with checklist reminders!"
 
 def setup_dispatcher():
+    """Setup conversation handler"""
     dispatcher.add_handler(ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -2000,14 +2344,18 @@ def setup_dispatcher():
             CHECKLIST_ASK_IMAGE: [MessageHandler(Filters.photo, cl_handle_image_upload)],
             TICKET_ASK_CONTACT: [MessageHandler(Filters.contact, ticket_handle_contact)],
             TICKET_ASK_TYPE: [MessageHandler(Filters.text & ~Filters.command, ticket_handle_type)],
-            TICKET_ASK_SUBTYPE: [MessageHandler(Filters.text & ~Filters.command, ticket_handle_subtype)],  # New subtype state
-            TICKET_ASK_ISSUE: [MessageHandler(Filters.text | Filters.photo, ticket_handle_issue)]
+            TICKET_ASK_SUBTYPE: [MessageHandler(Filters.text & ~Filters.command, ticket_handle_subtype)],
+            TICKET_ASK_ISSUE: [MessageHandler(Filters.text | Filters.photo, ticket_handle_issue)],
+            ALLOWANCE_ASK_CONTACT: [MessageHandler(Filters.contact, allowance_handle_contact)],
+            ALLOWANCE_ASK_TRIP_TYPE: [MessageHandler(Filters.text & ~Filters.command, allowance_handle_trip_type)],
+            ALLOWANCE_ASK_IMAGE: [MessageHandler(Filters.photo, allowance_handle_image)]
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
             CommandHandler("reset", reset)
         ]
     ))
+    
     dispatcher.add_handler(CommandHandler("reset", reset))
     dispatcher.add_handler(CommandHandler("statustoday", statustoday))
     dispatcher.add_handler(CommandHandler("statusyesterday", statusyesterday))
