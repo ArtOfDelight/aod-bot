@@ -858,7 +858,86 @@ def format_items_for_sheet(items):
     for item in items:
         formatted.append(f"{item['quantity']} x {item['name']} - ₹{item['price']}")
     
-    return " | ".join(formatted)  
+    return " | ".join(formatted) 
+
+def extract_travel_locations_with_ai(image_bytes):
+    """
+    Use Google Gemini AI to extract start and end locations from travel receipt
+    Returns: dict with 'start_location' and 'end_location'
+    """
+    try:
+        if not gemini_model:
+            print("⚠️ Gemini AI not available for location extraction")
+            return None
+        
+        print(f"\n=== AI LOCATION EXTRACTION STARTED ===")
+        
+        # Convert bytes to PIL Image
+        image = Image.open(io.BytesIO(image_bytes))
+        
+        prompt = """
+You are analyzing a travel/transportation receipt (auto, cab, Uber, Ola, Rapido, etc.).
+
+Please extract the pickup and drop locations and return them as a JSON object:
+
+{
+  "start_location": "<pickup/starting location>",
+  "end_location": "<drop/ending location>"
+}
+
+Rules:
+1. Look for keywords like: pickup, from, start, origin, source
+2. Look for keywords like: drop, to, destination, end
+3. Extract full location names/addresses when available
+4. If exact addresses are present, use them; otherwise use area/landmark names
+5. Return ONLY valid JSON, no additional text
+6. Be concise but complete with location names
+
+If you cannot extract the locations, return:
+{"error": "Could not extract locations"}
+"""
+        
+        # Generate content with image and prompt
+        response = gemini_model.generate_content([prompt, image])
+        
+        print(f"AI Location Response received")
+        print(f"Response text: {response.text[:500]}")
+        
+        # Parse JSON response
+        response_text = response.text.strip()
+        
+        # Remove markdown code blocks if present
+        if response_text.startswith("```json"):
+            response_text = response_text.replace("```json", "").replace("```", "").strip()
+        elif response_text.startswith("```"):
+            response_text = response_text.replace("```", "").strip()
+        
+        result = json.loads(response_text)
+        
+        if "error" in result:
+            print(f"❌ AI could not extract locations: {result['error']}")
+            return None
+        
+        # Validate result
+        if "start_location" not in result or "end_location" not in result:
+            print("❌ Incomplete location data in AI response")
+            return None
+        
+        print(f"✅ AI Location Extraction successful!")
+        print(f"   Start: {result['start_location']}")
+        print(f"   End: {result['end_location']}")
+        
+        return result
+        
+    except json.JSONDecodeError as e:
+        print(f"❌ Failed to parse AI location response as JSON: {e}")
+        print(f"Response was: {response.text}")
+        return None
+    except Exception as e:
+        print(f"❌ Error in AI location extraction: {e}")
+        import traceback
+        traceback.print_exc()
+        return None 
 
 def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount):
     """Save travel allowance (Going/Coming) to Travel Allowance sheet"""
@@ -2516,7 +2595,7 @@ def allowance_handle_image(update: Update, context):
         return ALLOWANCE_ASK_IMAGE
     
     try:
-        processing_msg = update.message.reply_text("⏳ Processing image with AI...")
+        processing_msg = update.message.reply_text("⏳ Processing image...")
         
         photo = update.message.photo[-1]
         print(f"Photo file_id: {photo.file_id}, file_size: {photo.file_size}")
@@ -2527,24 +2606,25 @@ def allowance_handle_image(update: Update, context):
         
         trip_type = context.user_data["trip_type"]
         
-        # Use AI to extract details
-        result = extract_order_details_with_ai(bytes(image_bytes), trip_type)
-        
-        if not result or "total_amount" not in result:
-            processing_msg.edit_text(
-                "❌ Could not extract information from the image.\n\n"
-                "💡 Tips:\n"
-                "• Make sure the image is clear and not blurry\n"
-                "• Ensure good lighting\n"
-                "• The total amount should be visible\n"
-                "• Try taking the screenshot again"
-            )
-            return ALLOWANCE_ASK_IMAGE
-        
-        amount = result["total_amount"]
-        
         # Handle based on trip type
         if trip_type == "Blinkit":
+            processing_msg.edit_text("⏳ Processing image with AI...")
+            
+            # Use AI to extract Blinkit order details
+            result = extract_order_details_with_ai(bytes(image_bytes), trip_type)
+            
+            if not result or "total_amount" not in result:
+                processing_msg.edit_text(
+                    "❌ Could not extract information from the image.\n\n"
+                    "💡 Tips:\n"
+                    "• Make sure the image is clear and not blurry\n"
+                    "• Ensure good lighting\n"
+                    "• The total amount should be visible\n"
+                    "• Try taking the screenshot again"
+                )
+                return ALLOWANCE_ASK_IMAGE
+            
+            amount = result["total_amount"]
             items = result.get("items", [])
             items_formatted = format_items_for_sheet(items)
             
@@ -2599,7 +2679,42 @@ def allowance_handle_image(update: Update, context):
                 return ALLOWANCE_ASK_IMAGE
         
         else:
-            # Save to Travel Allowance sheet for Going/Coming
+            # Travel allowance (Going/Coming) - Use OLD method for amount
+            processing_msg.edit_text("⏳ Extracting amount from image...")
+            
+            # Extract text using Vision API
+            extracted_text = extract_text_from_image(bytes(image_bytes))
+            
+            if not extracted_text:
+                processing_msg.edit_text(
+                    "❌ Could not extract text from the image.\n\n"
+                    "💡 Tips:\n"
+                    "• Make sure the image is clear and not blurry\n"
+                    "• Ensure good lighting\n"
+                    "• The amount should be visible\n"
+                    "• Try taking the screenshot again"
+                )
+                return ALLOWANCE_ASK_IMAGE
+            
+            # Extract amount using regex (old method)
+            amount = extract_amount_from_text(extracted_text)
+            
+            if amount is None:
+                processing_msg.edit_text(
+                    "❌ Could not extract amount from the image.\n\n"
+                    "💡 Tips:\n"
+                    "• Ensure the fare/amount is clearly visible\n"
+                    "• Try capturing the entire receipt\n"
+                    "• Make sure there are no glares or shadows\n"
+                    "• Try taking the screenshot again"
+                )
+                return ALLOWANCE_ASK_IMAGE
+            
+            # Additionally extract locations using AI (for display only, not saved to sheet)
+            processing_msg.edit_text("⏳ Extracting travel locations...")
+            locations = extract_travel_locations_with_ai(bytes(image_bytes))
+            
+            # Save to Travel Allowance sheet (same structure, no location columns)
             success = save_travel_allowance(
                 context.user_data["emp_id"],
                 context.user_data["emp_name"],
@@ -2615,11 +2730,21 @@ def allowance_handle_image(update: Update, context):
                     f"🏢 Outlet: {context.user_data['outlet']}",
                     f"🚗 Trip: {trip_type}",
                     f"💰 Amount: ₹{amount:.2f}",
+                ]
+                
+                # Add location info if extracted successfully
+                if locations:
+                    confirmation.append(f"\n📍 Travel Details:")
+                    confirmation.append(f"   From: {locations['start_location']}")
+                    confirmation.append(f"   To: {locations['end_location']}")
+                else:
+                    confirmation.append(f"\n📍 Location details could not be extracted")
+                
+                confirmation.extend([
                     f"\n📅 Date: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d')}",
                     f"⏰ Time: {datetime.datetime.now(INDIA_TZ).strftime('%H:%M:%S')}",
-                    f"\n✨ Extracted by AI",
                     f"\nUse /start to submit another allowance."
-                ]
+                ])
                 
                 processing_msg.edit_text("\n".join(confirmation))
             else:
