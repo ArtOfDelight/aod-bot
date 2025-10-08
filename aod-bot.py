@@ -675,9 +675,9 @@ def validate_ai_amount_with_ocr(ai_amount, ocr_text):
     return (False, "low", ai_amount)
 
 
-def extract_order_details_with_ai(image_bytes, order_type="Blinkit"):
+def extract_order_details_with_ai(image_bytes, order_type="Blinkit", skip_validation=False):
     """
-    Use Google Gemini AI to extract order details from image with validation
+    Use Google Gemini AI to extract order details from image with optional validation
     Returns: dict with 'total_amount', 'items', 'confidence'
     """
     try:
@@ -687,14 +687,18 @@ def extract_order_details_with_ai(image_bytes, order_type="Blinkit"):
         
         print(f"\n=== AI EXTRACTION STARTED ({order_type}) ===")
         
-        # STEP 1: Extract text using Vision API for validation
-        print("Step 1: Extracting text with Vision API for validation...")
-        ocr_text = extract_text_from_image(image_bytes)
-        
-        if not ocr_text:
-            print("⚠️ Vision API couldn't extract text, proceeding with AI only")
+        # STEP 1: Extract text using Vision API for validation (only if validation enabled)
+        ocr_text = ""
+        if not skip_validation:
+            print("Step 1: Extracting text with Vision API for validation...")
+            ocr_text = extract_text_from_image(image_bytes)
+            
+            if not ocr_text:
+                print("⚠️ Vision API couldn't extract text, proceeding with AI only")
+            else:
+                print(f"Vision API extracted {len(ocr_text)} characters")
         else:
-            print(f"Vision API extracted {len(ocr_text)} characters")
+            print("Step 1: Validation skipped for Blinkit/Instamart orders")
         
         # Convert bytes to PIL Image
         image = Image.open(io.BytesIO(image_bytes))
@@ -785,29 +789,36 @@ If you cannot extract the amount with certainty, return:
         
         ai_amount = result["total_amount"]
         
-        # STEP 3: Strict validation with OCR
-        print(f"Step 3: STRICT validation of AI amount (₹{ai_amount})...")
-        
-        is_valid, confidence, corrected_amount = validate_ai_amount_with_ocr(ai_amount, ocr_text)
-        
-        # If validation failed or found different amount, use corrected amount
-        if not is_valid or abs(corrected_amount - ai_amount) > 0.01:
-            print(f"⚠️ Amount corrected: ₹{ai_amount} → ₹{corrected_amount}")
-            result["total_amount"] = corrected_amount
-            result["amount_corrected"] = True
-            result["original_ai_amount"] = ai_amount
+        # STEP 3: Validation (only if not skipped)
+        if not skip_validation:
+            print(f"Step 3: STRICT validation of AI amount (₹{ai_amount})...")
+            
+            is_valid, confidence, corrected_amount = validate_ai_amount_with_ocr(ai_amount, ocr_text)
+            
+            # If validation failed or found different amount, use corrected amount
+            if not is_valid or abs(corrected_amount - ai_amount) > 0.01:
+                print(f"⚠️ Amount corrected: ₹{ai_amount} → ₹{corrected_amount}")
+                result["total_amount"] = corrected_amount
+                result["amount_corrected"] = True
+                result["original_ai_amount"] = ai_amount
+            else:
+                result["amount_corrected"] = False
+            
+            result["confidence"] = confidence
+            result["validation_warning"] = (confidence == "low")
+            
+            # Sanity checks on final amount
+            final_amount = result["total_amount"]
+            if final_amount < 10 or final_amount > 50000:
+                print(f"⚠️ WARNING: Amount ₹{final_amount} outside normal range (₹10-₹50,000)")
+                result["confidence"] = "low"
+                result["validation_warning"] = True
         else:
+            # No validation - trust AI completely
             result["amount_corrected"] = False
-        
-        result["confidence"] = confidence
-        result["validation_warning"] = (confidence == "low")
-        
-        # Sanity checks on final amount
-        final_amount = result["total_amount"]
-        if final_amount < 10 or final_amount > 50000:
-            print(f"⚠️ WARNING: Amount ₹{final_amount} outside normal range (₹10-₹50,000)")
-            result["confidence"] = "low"
-            result["validation_warning"] = True
+            result["confidence"] = "high"
+            result["validation_warning"] = False
+            print(f"✅ Using AI amount directly (no validation): ₹{ai_amount}")
         
         # Ensure items list exists for Blinkit orders
         if order_type == "Blinkit" and "items" not in result:
@@ -2707,65 +2718,9 @@ def allowance_handle_trip_type(update: Update, context):
 def allowance_handle_image(update: Update, context):
     """Handle allowance image upload with AI-powered extraction"""
     
-    # Check if user is confirming a pending Blinkit order
-    if update.message.text and update.message.text.strip().upper() == "CONFIRM":
-        pending_data = context.user_data.get("pending_blinkit")
-        if pending_data:
-            processing_msg = update.message.reply_text("⏳ Saving confirmed order...")
-            
-            success = save_blinkit_order(
-                context.user_data["emp_id"],
-                context.user_data["emp_name"],
-                context.user_data["outlet"],
-                pending_data["amount"],
-                pending_data["items_formatted"],
-                pending_data.get("extracted_text", "")
-            )
-            
-            if success:
-                items = pending_data.get("items", [])
-                confirmation = [
-                    f"✅ Blinkit order recorded successfully!\n",
-                    f"👤 Employee: {context.user_data['short_name']}",
-                    f"🏢 Outlet: {context.user_data['outlet']}",
-                    f"💰 Total Amount: ₹{pending_data['amount']:.2f}",
-                    f"✓ Manually confirmed by user"
-                ]
-                
-                if items:
-                    confirmation.append(f"\n📦 Items Ordered ({len(items)}):")
-                    for item in items[:8]:
-                        item_name = item.get('name', 'Unknown')
-                        item_qty = item.get('quantity', '1')
-                        item_price = item.get('price', 0)
-                        confirmation.append(f"  • {item_qty} x {item_name} - ₹{item_price:.2f}")
-                    if len(items) > 8:
-                        confirmation.append(f"  ... and {len(items) - 8} more items")
-                
-                confirmation.extend([
-                    f"\n📅 Date: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d')}",
-                    f"⏰ Time: {datetime.datetime.now(INDIA_TZ).strftime('%H:%M:%S')}",
-                    f"\nUse /start to submit another order."
-                ])
-                
-                processing_msg.edit_text("\n".join(confirmation))
-                context.user_data.pop("pending_blinkit", None)
-                return ConversationHandler.END
-            else:
-                processing_msg.edit_text("❌ Error saving to sheet. Please try again or contact admin.")
-                context.user_data.pop("pending_blinkit", None)
-                return ConversationHandler.END
-    
     if not update.message.photo:
-        if update.message.text and context.user_data.get("pending_blinkit"):
-            update.message.reply_text("⚠️ Please reply with 'CONFIRM' to save the order, or upload a new image to retry.")
-            return ALLOWANCE_ASK_IMAGE
-        
         update.message.reply_text("❌ Please upload a photo/screenshot.")
         return ALLOWANCE_ASK_IMAGE
-    
-    # Clear any pending confirmation if new image is uploaded
-    context.user_data.pop("pending_blinkit", None)
     
     try:
         processing_msg = update.message.reply_text("⏳ Processing image...")
@@ -2782,7 +2737,8 @@ def allowance_handle_image(update: Update, context):
         if trip_type == "Blinkit":
             processing_msg.edit_text("⏳ Processing image with AI...")
             
-            result = extract_order_details_with_ai(bytes(image_bytes), trip_type)
+            # Use AI extraction WITHOUT validation for Blinkit
+            result = extract_order_details_with_ai(bytes(image_bytes), trip_type, skip_validation=True)
             
             if not result or "total_amount" not in result:
                 processing_msg.edit_text(
@@ -2799,44 +2755,7 @@ def allowance_handle_image(update: Update, context):
             items = result.get("items", [])
             items_formatted = format_items_for_sheet(items)
             
-            # Check validation confidence
-            confidence = result.get("confidence", "medium")
-            has_warning = result.get("validation_warning", False)
-            amount_corrected = result.get("amount_corrected", False)
-            original_amount = result.get("original_ai_amount", 0)
-            
-            if has_warning or confidence == "low":
-                # Warn user about low confidence
-                warning_msg = (
-                    f"⚠️ VALIDATION WARNING\n\n"
-                    f"Extracted Amount: ₹{amount:.2f}\n"
-                )
-                
-                if amount_corrected:
-                    warning_msg += f"(AI initially said ₹{original_amount:.2f}, corrected by OCR)\n"
-                
-                warning_msg += (
-                    f"\nThe system could not fully verify this amount from the image. "
-                    f"Please verify the amount is correct before proceeding.\n\n"
-                    f"If the amount is WRONG, please:\n"
-                    f"1. Take a clearer screenshot\n"
-                    f"2. Ensure good lighting\n"
-                    f"3. Upload again\n\n"
-                    f"If the amount is CORRECT (₹{amount:.2f}), reply with 'CONFIRM' to save it."
-                )
-                processing_msg.edit_text(warning_msg)
-                
-                # Store data for confirmation
-                context.user_data["pending_blinkit"] = {
-                    "amount": amount,
-                    "items_formatted": items_formatted,
-                    "items": items,
-                    "extracted_text": "",
-                    "amount_corrected": amount_corrected,
-                    "original_amount": original_amount
-                }
-                return ALLOWANCE_ASK_IMAGE
-            
+            # No validation warnings for Blinkit - trust AI completely
             extracted_text_backup = ""
             try:
                 extracted_text_backup = extract_text_from_image(bytes(image_bytes))
@@ -2859,12 +2778,6 @@ def allowance_handle_image(update: Update, context):
                     f"🏢 Outlet: {context.user_data['outlet']}",
                     f"💰 Total Amount: ₹{amount:.2f}",
                 ]
-                
-                if confidence == "high":
-                    confirmation.append(f"✓ Verified with high confidence")
-                elif amount_corrected:
-                    confirmation.append(f"⚠️ Amount corrected: AI extracted ₹{original_amount:.2f}, but OCR found ₹{amount:.2f}")
-                    confirmation.append(f"✓ Using OCR-verified amount")
                 
                 if items:
                     confirmation.append(f"\n📦 Items Ordered ({len(items)}):")
@@ -2891,11 +2804,11 @@ def allowance_handle_image(update: Update, context):
                 return ALLOWANCE_ASK_IMAGE
         
         else:
-            # Travel allowance (Going/Coming) - Try AI first, fallback to regex
+            # Travel allowance (Going/Coming) - Use AI WITH validation
             processing_msg.edit_text("⏳ Extracting amount from image...")
             
             # Try AI extraction first (with validation)
-            result = extract_order_details_with_ai(bytes(image_bytes), "Travel")
+            result = extract_order_details_with_ai(bytes(image_bytes), "Travel", skip_validation=False)
             
             amount = None
             amount_corrected = False
