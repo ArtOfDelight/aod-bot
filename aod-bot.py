@@ -785,64 +785,38 @@ If you cannot extract the amount with certainty, return:
         
         ai_amount = result["total_amount"]
         
-        # STEP 3: Cross-validate with Vision API OCR
-        print(f"Step 3: Validating AI amount (₹{ai_amount}) against Vision API OCR...")
-        validation_passed = False
+        # STEP 3: Strict validation with OCR
+        print(f"Step 3: STRICT validation of AI amount (₹{ai_amount})...")
         
-        if ocr_text:
-            # Check if the exact amount appears in OCR text
-            amount_str = str(int(ai_amount)) if ai_amount == int(ai_amount) else str(ai_amount)
-            
-            # Look for the amount in various formats
-            patterns_to_check = [
-                amount_str,
-                f"₹{amount_str}",
-                f"Rs {amount_str}",
-                f"Rs. {amount_str}",
-                amount_str.replace(".", ","),
-            ]
-            
-            # Check for amounts within ±5% (to account for OCR errors)
-            tolerance = ai_amount * 0.05
-            amount_range = range(int(ai_amount - tolerance), int(ai_amount + tolerance + 1))
-            
-            for pattern in patterns_to_check:
-                if pattern in ocr_text:
-                    validation_passed = True
-                    print(f"✅ Validation PASSED: Found '{pattern}' in OCR text")
-                    break
-            
-            if not validation_passed:
-                for num in amount_range:
-                    if str(num) in ocr_text:
-                        validation_passed = True
-                        print(f"✅ Validation PASSED: Found similar amount '{num}' in OCR text")
-                        break
-            
-            if not validation_passed:
-                print(f"⚠️ WARNING: Could not verify amount ₹{ai_amount} in OCR text")
-                result["confidence"] = "low"
-                result["validation_warning"] = True
-            else:
-                result["confidence"] = "high"
-                result["validation_warning"] = False
+        is_valid, confidence, corrected_amount = validate_ai_amount_with_ocr(ai_amount, ocr_text)
+        
+        # If validation failed or found different amount, use corrected amount
+        if not is_valid or abs(corrected_amount - ai_amount) > 0.01:
+            print(f"⚠️ Amount corrected: ₹{ai_amount} → ₹{corrected_amount}")
+            result["total_amount"] = corrected_amount
+            result["amount_corrected"] = True
+            result["original_ai_amount"] = ai_amount
         else:
-            print("⚠️ No OCR text available for validation")
-            result["confidence"] = "medium"
-            result["validation_warning"] = False
+            result["amount_corrected"] = False
+        
+        result["confidence"] = confidence
+        result["validation_warning"] = (confidence == "low")
+        
+        # Sanity checks on final amount
+        final_amount = result["total_amount"]
+        if final_amount < 10 or final_amount > 50000:
+            print(f"⚠️ WARNING: Amount ₹{final_amount} outside normal range (₹10-₹50,000)")
+            result["confidence"] = "low"
+            result["validation_warning"] = True
         
         # Ensure items list exists for Blinkit orders
         if order_type == "Blinkit" and "items" not in result:
             result["items"] = []
         
-        # Sanity checks on amount
-        if ai_amount < 10 or ai_amount > 50000:
-            print(f"⚠️ WARNING: Amount ₹{ai_amount} seems unusual (outside ₹10-₹50,000 range)")
-            result["confidence"] = "low"
-            result["validation_warning"] = True
-        
         print(f"✅ AI Extraction completed with {result.get('confidence', 'unknown')} confidence")
-        print(f"   Total Amount: ₹{result['total_amount']}")
+        print(f"   Final Amount: ₹{result['total_amount']}")
+        if result.get("amount_corrected"):
+            print(f"   (Corrected from AI's ₹{result['original_ai_amount']})")
         if order_type == "Blinkit" and result.get("items"):
             print(f"   Items extracted: {len(result['items'])}")
         
@@ -850,6 +824,7 @@ If you cannot extract the amount with certainty, return:
         
     except json.JSONDecodeError as e:
         print(f"❌ Failed to parse AI response as JSON: {e}")
+        print(f"Response was: {response.text}")
         return None
     except Exception as e:
         print(f"❌ Error in AI extraction: {e}")
@@ -2916,23 +2891,41 @@ def allowance_handle_image(update: Update, context):
                 return ALLOWANCE_ASK_IMAGE
         
         else:
-            # Travel allowance (Going/Coming) - Use OLD method for amount
+            # Travel allowance (Going/Coming) - Try AI first, fallback to regex
             processing_msg.edit_text("⏳ Extracting amount from image...")
             
-            extracted_text = extract_text_from_image(bytes(image_bytes))
+            # Try AI extraction first (with validation)
+            result = extract_order_details_with_ai(bytes(image_bytes), "Travel")
             
-            if not extracted_text:
-                processing_msg.edit_text(
-                    "❌ Could not extract text from the image.\n\n"
-                    "💡 Tips:\n"
-                    "• Make sure the image is clear\n"
-                    "• Ensure good lighting\n"
-                    "• Try taking the screenshot again"
-                )
-                return ALLOWANCE_ASK_IMAGE
+            amount = None
+            amount_corrected = False
+            original_amount = 0
             
-            # Extract amount using regex (old method)
-            amount = extract_amount_from_text(extracted_text)
+            if result and "total_amount" in result:
+                # AI extraction successful
+                amount = result["total_amount"]
+                amount_corrected = result.get("amount_corrected", False)
+                original_amount = result.get("original_ai_amount", 0)
+                print(f"✅ AI extracted travel amount: ₹{amount}")
+                if amount_corrected:
+                    print(f"   (Corrected from ₹{original_amount})")
+            else:
+                # Fallback to regex method
+                print("⚠️ AI extraction failed, falling back to regex method")
+                extracted_text = extract_text_from_image(bytes(image_bytes))
+                
+                if not extracted_text:
+                    processing_msg.edit_text(
+                        "❌ Could not extract text from the image.\n\n"
+                        "💡 Tips:\n"
+                        "• Make sure the image is clear\n"
+                        "• Ensure good lighting\n"
+                        "• Try taking the screenshot again"
+                    )
+                    return ALLOWANCE_ASK_IMAGE
+                
+                # Extract amount using regex
+                amount = extract_amount_from_text(extracted_text)
             
             if amount is None:
                 processing_msg.edit_text(
@@ -2940,6 +2933,7 @@ def allowance_handle_image(update: Update, context):
                     "💡 Tips:\n"
                     "• Ensure the fare/amount is clearly visible\n"
                     "• Try capturing the entire receipt\n"
+                    "• Make sure the amount is in ₹ symbol or near keywords like 'fare', 'total'\n"
                     "• Try taking the screenshot again"
                 )
                 return ALLOWANCE_ASK_IMAGE
@@ -2965,6 +2959,10 @@ def allowance_handle_image(update: Update, context):
                     f"🚗 Trip: {trip_type}",
                     f"💰 Amount: ₹{amount:.2f}",
                 ]
+                
+                # Show correction notice if amount was corrected by OCR
+                if amount_corrected:
+                    confirmation.append(f"⚠️ Amount corrected: Initially read as ₹{original_amount:.2f}, verified as ₹{amount:.2f}")
                 
                 # Add location info if extracted
                 if locations:
@@ -2993,7 +2991,7 @@ def allowance_handle_image(update: Update, context):
         traceback.print_exc()
         update.message.reply_text("❌ Error processing image. Please try again or contact admin.")
         return ALLOWANCE_ASK_IMAGE
-
+    
 def cleanup_file_safely(file_path):
     """Safely delete a file with multiple attempts and proper error handling"""
     if not file_path or not os.path.exists(file_path):
