@@ -591,6 +591,90 @@ def extract_amount_from_text(text):
         traceback.print_exc()
         return None
 
+def validate_ai_amount_with_ocr(ai_amount, ocr_text):
+    """
+    Strictly validate AI extracted amount against OCR text
+    Returns: (is_valid, confidence, actual_amount_from_ocr)
+    """
+    print(f"\n=== STRICT VALIDATION ===")
+    print(f"AI Amount: ₹{ai_amount}")
+    print(f"OCR Text length: {len(ocr_text)} chars")
+    
+    if not ocr_text:
+        print("⚠️ No OCR text for validation")
+        return (True, "medium", ai_amount)  # Allow if no OCR
+    
+    # Extract all numbers from OCR text that could be amounts
+    amount_pattern = r'₹\s*(\d+(?:\.\d{1,2})?)'
+    ocr_amounts = []
+    
+    for match in re.finditer(amount_pattern, ocr_text):
+        try:
+            amt = float(match.group(1))
+            if 10 <= amt <= 50000:  # Reasonable range
+                ocr_amounts.append(amt)
+                print(f"Found ₹ amount in OCR: {amt}")
+        except:
+            continue
+    
+    # Check if AI amount matches any OCR amount EXACTLY
+    ai_amount_rounded = round(ai_amount, 2)
+    
+    for ocr_amt in ocr_amounts:
+        if abs(ocr_amt - ai_amount_rounded) < 0.01:  # Exact match
+            print(f"✅ EXACT MATCH: AI ₹{ai_amount} matches OCR ₹{ocr_amt}")
+            return (True, "high", ai_amount)
+    
+    # If no exact match, check if AI amount is close to any OCR amount
+    for ocr_amt in ocr_amounts:
+        diff_percent = abs(ocr_amt - ai_amount) / ai_amount * 100
+        if diff_percent <= 5:  # Within 5%
+            print(f"⚠️ CLOSE MATCH: AI ₹{ai_amount} vs OCR ₹{ocr_amt} (diff: {diff_percent:.1f}%)")
+            # Use OCR amount instead of AI amount since they're close
+            return (True, "medium", ocr_amt)
+    
+    # Check if any OCR amount is significantly different
+    if ocr_amounts:
+        print(f"❌ MISMATCH: AI says ₹{ai_amount} but OCR shows: {ocr_amounts}")
+        # Return the most reasonable OCR amount
+        largest_ocr = max(ocr_amounts)
+        return (False, "low", largest_ocr)
+    
+    # No ₹ amounts found in OCR, try finding plain numbers
+    plain_pattern = r'\b(\d{2,5})\b'
+    plain_numbers = []
+    
+    for match in re.finditer(plain_pattern, ocr_text):
+        try:
+            num = float(match.group(1))
+            if 10 <= num <= 50000:
+                plain_numbers.append(num)
+        except:
+            continue
+    
+    # Check if AI amount appears as plain number
+    ai_int = int(ai_amount) if ai_amount == int(ai_amount) else ai_amount
+    if ai_int in plain_numbers:
+        print(f"✅ Found AI amount {ai_int} as plain number in OCR")
+        return (True, "medium", ai_amount)
+    
+    # Check for close plain numbers
+    for num in plain_numbers:
+        if abs(num - ai_amount) < 0.01:
+            print(f"✅ EXACT MATCH with plain number: {num}")
+            return (True, "high", ai_amount)
+    
+    print(f"⚠️ Could not validate AI amount ₹{ai_amount} in OCR text")
+    print(f"Plain numbers found: {plain_numbers}")
+    
+    if plain_numbers:
+        # Use the number closest to AI amount
+        closest = min(plain_numbers, key=lambda x: abs(x - ai_amount))
+        return (False, "low", closest)
+    
+    return (False, "low", ai_amount)
+
+
 def extract_order_details_with_ai(image_bytes, order_type="Blinkit"):
     """
     Use Google Gemini AI to extract order details from image with validation
@@ -2676,7 +2760,10 @@ def allowance_handle_image(update: Update, context):
                 if items:
                     confirmation.append(f"\n📦 Items Ordered ({len(items)}):")
                     for item in items[:8]:
-                        confirmation.append(f"  • {item['quantity']} x {item['name']} - ₹{item['price']:.2f}")
+                        item_name = item.get('name', 'Unknown')
+                        item_qty = item.get('quantity', '1')
+                        item_price = item.get('price', 0)
+                        confirmation.append(f"  • {item_qty} x {item_name} - ₹{item_price:.2f}")
                     if len(items) > 8:
                         confirmation.append(f"  ... and {len(items) - 8} more items")
                 
@@ -2740,13 +2827,21 @@ def allowance_handle_image(update: Update, context):
             # Check validation confidence
             confidence = result.get("confidence", "medium")
             has_warning = result.get("validation_warning", False)
+            amount_corrected = result.get("amount_corrected", False)
+            original_amount = result.get("original_ai_amount", 0)
             
             if has_warning or confidence == "low":
                 # Warn user about low confidence
                 warning_msg = (
                     f"⚠️ VALIDATION WARNING\n\n"
-                    f"Extracted Amount: ₹{amount:.2f}\n\n"
-                    f"The system could not fully verify this amount from the image. "
+                    f"Extracted Amount: ₹{amount:.2f}\n"
+                )
+                
+                if amount_corrected:
+                    warning_msg += f"(AI initially said ₹{original_amount:.2f}, corrected by OCR)\n"
+                
+                warning_msg += (
+                    f"\nThe system could not fully verify this amount from the image. "
                     f"Please verify the amount is correct before proceeding.\n\n"
                     f"If the amount is WRONG, please:\n"
                     f"1. Take a clearer screenshot\n"
@@ -2761,7 +2856,9 @@ def allowance_handle_image(update: Update, context):
                     "amount": amount,
                     "items_formatted": items_formatted,
                     "items": items,
-                    "extracted_text": ""
+                    "extracted_text": "",
+                    "amount_corrected": amount_corrected,
+                    "original_amount": original_amount
                 }
                 return ALLOWANCE_ASK_IMAGE
             
@@ -2790,11 +2887,17 @@ def allowance_handle_image(update: Update, context):
                 
                 if confidence == "high":
                     confirmation.append(f"✓ Verified with high confidence")
+                elif amount_corrected:
+                    confirmation.append(f"⚠️ Amount corrected: AI extracted ₹{original_amount:.2f}, but OCR found ₹{amount:.2f}")
+                    confirmation.append(f"✓ Using OCR-verified amount")
                 
                 if items:
                     confirmation.append(f"\n📦 Items Ordered ({len(items)}):")
                     for item in items[:8]:
-                        confirmation.append(f"  • {item['quantity']} x {item['name']} - ₹{item['price']:.2f}")
+                        item_name = item.get('name', 'Unknown')
+                        item_qty = item.get('quantity', '1')
+                        item_price = item.get('price', 0)
+                        confirmation.append(f"  • {item_qty} x {item_name} - ₹{item_price:.2f}")
                     if len(items) > 8:
                         confirmation.append(f"  ... and {len(items) - 8} more items")
                 else:
