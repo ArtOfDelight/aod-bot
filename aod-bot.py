@@ -593,8 +593,8 @@ def extract_amount_from_text(text):
 
 def extract_order_details_with_ai(image_bytes, order_type="Blinkit"):
     """
-    Use Google Gemini AI to extract order details from image
-    Returns: dict with 'total_amount', 'items' (list of dicts with name, quantity, price)
+    Use Google Gemini AI to extract order details from image with validation
+    Returns: dict with 'total_amount', 'items', 'confidence'
     """
     try:
         if not gemini_model:
@@ -603,6 +603,15 @@ def extract_order_details_with_ai(image_bytes, order_type="Blinkit"):
         
         print(f"\n=== AI EXTRACTION STARTED ({order_type}) ===")
         
+        # STEP 1: Extract text using Vision API for validation
+        print("Step 1: Extracting text with Vision API for validation...")
+        ocr_text = extract_text_from_image(image_bytes)
+        
+        if not ocr_text:
+            print("⚠️ Vision API couldn't extract text, proceeding with AI only")
+        else:
+            print(f"Vision API extracted {len(ocr_text)} characters")
+        
         # Convert bytes to PIL Image
         image = Image.open(io.BytesIO(image_bytes))
         
@@ -610,6 +619,8 @@ def extract_order_details_with_ai(image_bytes, order_type="Blinkit"):
         if order_type == "Blinkit":
             prompt = """
 You are analyzing a food delivery or grocery order screenshot (Blinkit, Instamart, Swiggy, etc.).
+
+CRITICAL: Extract ONLY the information that is CLEARLY VISIBLE in the image. DO NOT guess or make up any numbers.
 
 Please extract the following information and return it as a JSON object:
 
@@ -624,20 +635,24 @@ Please extract the following information and return it as a JSON object:
   ]
 }
 
-Rules:
-1. For total_amount: Extract the FINAL/GRAND TOTAL amount (not item total, MRP, or subtotal)
-2. For items: Extract ALL ordered items with their quantities and FINAL prices (after discounts)
-3. Skip delivery fees, handling charges, or other non-item charges
-4. If quantity has units (g, kg, ml, etc.), include them
-5. Clean up item names (remove checkmarks, extra symbols)
-6. Return ONLY valid JSON, no additional text
+STRICT Rules:
+1. For total_amount: Extract the EXACT FINAL/GRAND TOTAL amount shown (not item total, MRP, or subtotal)
+2. DO NOT round numbers - extract EXACTLY as shown (e.g., if it says 94, return 94, NOT 100)
+3. For items: Extract ALL ordered items with their EXACT quantities and EXACT FINAL prices (after discounts)
+4. Skip delivery fees, handling charges, or other non-item charges
+5. If quantity has units (g, kg, ml, etc.), include them exactly as shown
+6. Clean up item names (remove checkmarks, extra symbols)
+7. Return ONLY valid JSON, no additional text
+8. If you're unsure about any number, return an error instead of guessing
 
-If you cannot extract the information, return:
+If you cannot extract the information with certainty, return:
 {"error": "Could not extract order details"}
 """
         else:  # Travel/Going/Coming
             prompt = """
 You are analyzing a payment receipt screenshot (auto, cab, UPI payment, etc.).
+
+CRITICAL: Extract ONLY the information that is CLEARLY VISIBLE in the image. DO NOT guess or make up any numbers.
 
 Please extract the payment amount and return it as a JSON object:
 
@@ -645,17 +660,20 @@ Please extract the payment amount and return it as a JSON object:
   "total_amount": <payment amount in rupees as a number>
 }
 
-Rules:
-1. Extract the main payment/fare amount
-2. Look for keywords like: fare, total, paid, amount, charge
-3. Return the largest meaningful amount if multiple amounts are present
-4. Return ONLY valid JSON, no additional text
+STRICT Rules:
+1. Extract the EXACT main payment/fare amount shown
+2. DO NOT round numbers - extract EXACTLY as shown (e.g., if it says 94, return 94, NOT 100)
+3. Look for keywords like: fare, total, paid, amount, charge
+4. Return the largest meaningful amount if multiple amounts are present
+5. Return ONLY valid JSON, no additional text
+6. If you're unsure about the amount, return an error instead of guessing
 
-If you cannot extract the amount, return:
+If you cannot extract the amount with certainty, return:
 {"error": "Could not extract amount"}
 """
         
-        # Generate content with image and prompt
+        # STEP 2: Generate content with AI
+        print("Step 2: Extracting with Gemini AI...")
         response = gemini_model.generate_content([prompt, image])
         
         print(f"AI Response received")
@@ -681,22 +699,73 @@ If you cannot extract the amount, return:
             print("❌ No total_amount in AI response")
             return None
         
+        ai_amount = result["total_amount"]
+        
+        # STEP 3: Cross-validate with Vision API OCR
+        print(f"Step 3: Validating AI amount (₹{ai_amount}) against Vision API OCR...")
+        validation_passed = False
+        
+        if ocr_text:
+            # Check if the exact amount appears in OCR text
+            amount_str = str(int(ai_amount)) if ai_amount == int(ai_amount) else str(ai_amount)
+            
+            # Look for the amount in various formats
+            patterns_to_check = [
+                amount_str,
+                f"₹{amount_str}",
+                f"Rs {amount_str}",
+                f"Rs. {amount_str}",
+                amount_str.replace(".", ","),
+            ]
+            
+            # Check for amounts within ±5% (to account for OCR errors)
+            tolerance = ai_amount * 0.05
+            amount_range = range(int(ai_amount - tolerance), int(ai_amount + tolerance + 1))
+            
+            for pattern in patterns_to_check:
+                if pattern in ocr_text:
+                    validation_passed = True
+                    print(f"✅ Validation PASSED: Found '{pattern}' in OCR text")
+                    break
+            
+            if not validation_passed:
+                for num in amount_range:
+                    if str(num) in ocr_text:
+                        validation_passed = True
+                        print(f"✅ Validation PASSED: Found similar amount '{num}' in OCR text")
+                        break
+            
+            if not validation_passed:
+                print(f"⚠️ WARNING: Could not verify amount ₹{ai_amount} in OCR text")
+                result["confidence"] = "low"
+                result["validation_warning"] = True
+            else:
+                result["confidence"] = "high"
+                result["validation_warning"] = False
+        else:
+            print("⚠️ No OCR text available for validation")
+            result["confidence"] = "medium"
+            result["validation_warning"] = False
+        
         # Ensure items list exists for Blinkit orders
         if order_type == "Blinkit" and "items" not in result:
             result["items"] = []
         
-        print(f"✅ AI Extraction successful!")
+        # Sanity checks on amount
+        if ai_amount < 10 or ai_amount > 50000:
+            print(f"⚠️ WARNING: Amount ₹{ai_amount} seems unusual (outside ₹10-₹50,000 range)")
+            result["confidence"] = "low"
+            result["validation_warning"] = True
+        
+        print(f"✅ AI Extraction completed with {result.get('confidence', 'unknown')} confidence")
         print(f"   Total Amount: ₹{result['total_amount']}")
         if order_type == "Blinkit" and result.get("items"):
             print(f"   Items extracted: {len(result['items'])}")
-            for item in result["items"][:3]:
-                print(f"     - {item['quantity']} x {item['name']} - ₹{item['price']}")
         
         return result
         
     except json.JSONDecodeError as e:
         print(f"❌ Failed to parse AI response as JSON: {e}")
-        print(f"Response was: {response.text}")
         return None
     except Exception as e:
         print(f"❌ Error in AI extraction: {e}")
@@ -872,7 +941,6 @@ def extract_travel_locations_with_ai(image_bytes):
         
         print(f"\n=== AI LOCATION EXTRACTION STARTED ===")
         
-        # Convert bytes to PIL Image
         image = Image.open(io.BytesIO(image_bytes))
         
         prompt = """
@@ -897,16 +965,12 @@ If you cannot extract the locations, return:
 {"error": "Could not extract locations"}
 """
         
-        # Generate content with image and prompt
         response = gemini_model.generate_content([prompt, image])
         
         print(f"AI Location Response received")
-        print(f"Response text: {response.text[:500]}")
         
-        # Parse JSON response
         response_text = response.text.strip()
         
-        # Remove markdown code blocks if present
         if response_text.startswith("```json"):
             response_text = response_text.replace("```json", "").replace("```", "").strip()
         elif response_text.startswith("```"):
@@ -918,7 +982,6 @@ If you cannot extract the locations, return:
             print(f"❌ AI could not extract locations: {result['error']}")
             return None
         
-        # Validate result
         if "start_location" not in result or "end_location" not in result:
             print("❌ Incomplete location data in AI response")
             return None
@@ -929,15 +992,9 @@ If you cannot extract the locations, return:
         
         return result
         
-    except json.JSONDecodeError as e:
-        print(f"❌ Failed to parse AI location response as JSON: {e}")
-        print(f"Response was: {response.text}")
-        return None
     except Exception as e:
         print(f"❌ Error in AI location extraction: {e}")
-        import traceback
-        traceback.print_exc()
-        return None 
+        return None
 
 def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount):
     """Save travel allowance (Going/Coming) to Travel Allowance sheet"""
@@ -2590,9 +2647,63 @@ def allowance_handle_trip_type(update: Update, context):
 
 def allowance_handle_image(update: Update, context):
     """Handle allowance image upload with AI-powered extraction"""
+    
+    # Check if user is confirming a pending Blinkit order
+    if update.message.text and update.message.text.strip().upper() == "CONFIRM":
+        pending_data = context.user_data.get("pending_blinkit")
+        if pending_data:
+            processing_msg = update.message.reply_text("⏳ Saving confirmed order...")
+            
+            success = save_blinkit_order(
+                context.user_data["emp_id"],
+                context.user_data["emp_name"],
+                context.user_data["outlet"],
+                pending_data["amount"],
+                pending_data["items_formatted"],
+                pending_data.get("extracted_text", "")
+            )
+            
+            if success:
+                items = pending_data.get("items", [])
+                confirmation = [
+                    f"✅ Blinkit order recorded successfully!\n",
+                    f"👤 Employee: {context.user_data['short_name']}",
+                    f"🏢 Outlet: {context.user_data['outlet']}",
+                    f"💰 Total Amount: ₹{pending_data['amount']:.2f}",
+                    f"✓ Manually confirmed by user"
+                ]
+                
+                if items:
+                    confirmation.append(f"\n📦 Items Ordered ({len(items)}):")
+                    for item in items[:8]:
+                        confirmation.append(f"  • {item['quantity']} x {item['name']} - ₹{item['price']:.2f}")
+                    if len(items) > 8:
+                        confirmation.append(f"  ... and {len(items) - 8} more items")
+                
+                confirmation.extend([
+                    f"\n📅 Date: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d')}",
+                    f"⏰ Time: {datetime.datetime.now(INDIA_TZ).strftime('%H:%M:%S')}",
+                    f"\nUse /start to submit another order."
+                ])
+                
+                processing_msg.edit_text("\n".join(confirmation))
+                context.user_data.pop("pending_blinkit", None)
+                return ConversationHandler.END
+            else:
+                processing_msg.edit_text("❌ Error saving to sheet. Please try again or contact admin.")
+                context.user_data.pop("pending_blinkit", None)
+                return ConversationHandler.END
+    
     if not update.message.photo:
+        if update.message.text and context.user_data.get("pending_blinkit"):
+            update.message.reply_text("⚠️ Please reply with 'CONFIRM' to save the order, or upload a new image to retry.")
+            return ALLOWANCE_ASK_IMAGE
+        
         update.message.reply_text("❌ Please upload a photo/screenshot.")
         return ALLOWANCE_ASK_IMAGE
+    
+    # Clear any pending confirmation if new image is uploaded
+    context.user_data.pop("pending_blinkit", None)
     
     try:
         processing_msg = update.message.reply_text("⏳ Processing image...")
@@ -2600,7 +2711,6 @@ def allowance_handle_image(update: Update, context):
         photo = update.message.photo[-1]
         print(f"Photo file_id: {photo.file_id}, file_size: {photo.file_size}")
         
-        # Download image
         file = photo.get_file()
         image_bytes = file.download_as_bytearray()
         
@@ -2610,7 +2720,6 @@ def allowance_handle_image(update: Update, context):
         if trip_type == "Blinkit":
             processing_msg.edit_text("⏳ Processing image with AI...")
             
-            # Use AI to extract Blinkit order details
             result = extract_order_details_with_ai(bytes(image_bytes), trip_type)
             
             if not result or "total_amount" not in result:
@@ -2628,7 +2737,34 @@ def allowance_handle_image(update: Update, context):
             items = result.get("items", [])
             items_formatted = format_items_for_sheet(items)
             
-            # Get extracted text for backup (optional)
+            # Check validation confidence
+            confidence = result.get("confidence", "medium")
+            has_warning = result.get("validation_warning", False)
+            
+            if has_warning or confidence == "low":
+                # Warn user about low confidence
+                warning_msg = (
+                    f"⚠️ VALIDATION WARNING\n\n"
+                    f"Extracted Amount: ₹{amount:.2f}\n\n"
+                    f"The system could not fully verify this amount from the image. "
+                    f"Please verify the amount is correct before proceeding.\n\n"
+                    f"If the amount is WRONG, please:\n"
+                    f"1. Take a clearer screenshot\n"
+                    f"2. Ensure good lighting\n"
+                    f"3. Upload again\n\n"
+                    f"If the amount is CORRECT (₹{amount:.2f}), reply with 'CONFIRM' to save it."
+                )
+                processing_msg.edit_text(warning_msg)
+                
+                # Store data for confirmation
+                context.user_data["pending_blinkit"] = {
+                    "amount": amount,
+                    "items_formatted": items_formatted,
+                    "items": items,
+                    "extracted_text": ""
+                }
+                return ALLOWANCE_ASK_IMAGE
+            
             extracted_text_backup = ""
             try:
                 extracted_text_backup = extract_text_from_image(bytes(image_bytes))
@@ -2652,13 +2788,13 @@ def allowance_handle_image(update: Update, context):
                     f"💰 Total Amount: ₹{amount:.2f}",
                 ]
                 
+                if confidence == "high":
+                    confirmation.append(f"✓ Verified with high confidence")
+                
                 if items:
                     confirmation.append(f"\n📦 Items Ordered ({len(items)}):")
                     for item in items[:8]:
-                        item_name = item.get('name', 'Unknown')
-                        item_qty = item.get('quantity', '1')
-                        item_price = item.get('price', 0)
-                        confirmation.append(f"  • {item_qty} x {item_name} - ₹{item_price:.2f}")
+                        confirmation.append(f"  • {item['quantity']} x {item['name']} - ₹{item['price']:.2f}")
                     if len(items) > 8:
                         confirmation.append(f"  ... and {len(items) - 8} more items")
                 else:
@@ -2673,25 +2809,21 @@ def allowance_handle_image(update: Update, context):
                 
                 processing_msg.edit_text("\n".join(confirmation))
             else:
-                processing_msg.edit_text(
-                    "❌ Error saving to sheet. Please try again or contact admin."
-                )
+                processing_msg.edit_text("❌ Error saving to sheet. Please try again or contact admin.")
                 return ALLOWANCE_ASK_IMAGE
         
         else:
             # Travel allowance (Going/Coming) - Use OLD method for amount
             processing_msg.edit_text("⏳ Extracting amount from image...")
             
-            # Extract text using Vision API
             extracted_text = extract_text_from_image(bytes(image_bytes))
             
             if not extracted_text:
                 processing_msg.edit_text(
                     "❌ Could not extract text from the image.\n\n"
                     "💡 Tips:\n"
-                    "• Make sure the image is clear and not blurry\n"
+                    "• Make sure the image is clear\n"
                     "• Ensure good lighting\n"
-                    "• The amount should be visible\n"
                     "• Try taking the screenshot again"
                 )
                 return ALLOWANCE_ASK_IMAGE
@@ -2705,16 +2837,15 @@ def allowance_handle_image(update: Update, context):
                     "💡 Tips:\n"
                     "• Ensure the fare/amount is clearly visible\n"
                     "• Try capturing the entire receipt\n"
-                    "• Make sure there are no glares or shadows\n"
                     "• Try taking the screenshot again"
                 )
                 return ALLOWANCE_ASK_IMAGE
             
-            # Additionally extract locations using AI (for display only, not saved to sheet)
+            # Extract locations using AI (for display only)
             processing_msg.edit_text("⏳ Extracting travel locations...")
             locations = extract_travel_locations_with_ai(bytes(image_bytes))
             
-            # Save to Travel Allowance sheet (same structure, no location columns)
+            # Save to Travel Allowance sheet (same structure)
             success = save_travel_allowance(
                 context.user_data["emp_id"],
                 context.user_data["emp_name"],
@@ -2732,7 +2863,7 @@ def allowance_handle_image(update: Update, context):
                     f"💰 Amount: ₹{amount:.2f}",
                 ]
                 
-                # Add location info if extracted successfully
+                # Add location info if extracted
                 if locations:
                     confirmation.append(f"\n📍 Travel Details:")
                     confirmation.append(f"   From: {locations['start_location']}")
@@ -2748,9 +2879,7 @@ def allowance_handle_image(update: Update, context):
                 
                 processing_msg.edit_text("\n".join(confirmation))
             else:
-                processing_msg.edit_text(
-                    "❌ Error saving to sheet. Please try again or contact admin."
-                )
+                processing_msg.edit_text("❌ Error saving to sheet. Please try again or contact admin.")
                 return ALLOWANCE_ASK_IMAGE
         
         return ConversationHandler.END
@@ -2759,9 +2888,7 @@ def allowance_handle_image(update: Update, context):
         print(f"Error processing allowance image: {e}")
         import traceback
         traceback.print_exc()
-        update.message.reply_text(
-            "❌ Error processing image. Please try again or contact admin."
-        )
+        update.message.reply_text("❌ Error processing image. Please try again or contact admin.")
         return ALLOWANCE_ASK_IMAGE
 
 def cleanup_file_safely(file_path):
@@ -2897,7 +3024,7 @@ def setup_dispatcher():
             TICKET_ASK_ISSUE: [MessageHandler(Filters.text | Filters.photo, ticket_handle_issue)],
             ALLOWANCE_ASK_CONTACT: [MessageHandler(Filters.contact, allowance_handle_contact)],
             ALLOWANCE_ASK_TRIP_TYPE: [MessageHandler(Filters.text & ~Filters.command, allowance_handle_trip_type)],
-            ALLOWANCE_ASK_IMAGE: [MessageHandler(Filters.photo, allowance_handle_image)]
+            ALLOWANCE_ASK_IMAGE: [MessageHandler(Filters.photo | Filters.text, allowance_handle_image)]
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
