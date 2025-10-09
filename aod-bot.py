@@ -1615,7 +1615,7 @@ def start(update: Update, context):
         [InlineKeyboardButton("🔴 Sign Out", callback_data="signout")],
         [InlineKeyboardButton("📋 Fill Checklist", callback_data="checklist")],
         [InlineKeyboardButton("🎫 Raise Ticket", callback_data="ticket")],
-        [InlineKeyboardButton("💰 Submit Allowance", callback_data="allowance")]  # NEW LINE
+        [InlineKeyboardButton("💰 Reimbursements", callback_data="allowance")]  # NEW LINE
     ])
     update.message.reply_text("Welcome! What would you like to do today?", reply_markup=buttons)
     return ASK_ACTION
@@ -2619,13 +2619,13 @@ def allowance_handle_contact(update: Update, context):
     
     # Ask for trip type
     keyboard = [
-        ["🏠➡️🏢 Going (To Work)", "🏢➡️🏠 Coming (From Work)"],
+        ["🏠➡️🏢 Going (To Outlet)", "🏢➡️🏠 Coming (From Outlet)"],
         ["🛒 Blinkit/Instamart Order"]
     ]
     update.message.reply_text(
         f"✅ Verified: {short_name}\n"
         f"🏢 Outlet: {outlet_code}\n\n"
-        f"🚗 Is this allowance for going TO work or coming FROM work?",
+        f"🚗 What type of Reimbursements are you registering for?",
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
     
