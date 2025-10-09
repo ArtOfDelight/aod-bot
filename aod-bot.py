@@ -1188,54 +1188,7 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
 
-def send_chat_id_notification(update: Update, emp_name: str, outlet_code: str):
-    """Send chat ID notification to manager when someone signs in"""
-    try:
-        user = update.message.from_user
-        chat_id = update.message.chat_id
-        
-        # Format user information
-        user_info = f"ID: {user.id}"
-        if user.username:
-            user_info += f", Username: @{user.username}"
-        if user.first_name:
-            user_info += f", First Name: {user.first_name}"
-        if user.last_name:
-            user_info += f", Last Name: {user.last_name}"
-        
-        notification_message = (
-            f"🔔 New Sign-In Alert\n\n"
-            f"👤 Employee: {emp_name}\n"
-            f"🏢 Outlet: {outlet_code}\n"
-            f"💬 Chat ID: {chat_id}\n"
-            f"📱 User Info: {user_info}\n"
-            f"🕐 Time: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        
-        bot.send_message(chat_id=MANAGER_CHAT_ID, text=notification_message)
-        print(f"Sent chat ID notification for {emp_name} (Chat ID: {chat_id}) to manager")
-        
-        # Clear reminder status when employee signs in
-        with reminder_lock:
-            emp_id = None
-            # Find employee ID from name (reverse lookup)
-            try:
-                gc = gspread.authorize(ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE))
-                emp_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
-                emp_records = emp_sheet.get_all_records()
-                for row in emp_records:
-                    if str(row.get("Short Name", "")).strip().lower() == emp_name.lower():
-                        emp_id = str(row.get("Employee ID", "")).strip()
-                        break
-                
-                if emp_id and emp_id in reminder_status:
-                    del reminder_status[emp_id]
-                    print(f"Cleared reminder status for {emp_name} ({emp_id})")
-            except Exception as e:
-                print(f"Error clearing reminder status: {e}")
-        
-    except Exception as e:
-        print(f"Failed to send chat ID notification: {e}")
+
 
 def send_attendance_report(update: Update, context, mode="signin_only"):
     try:
@@ -1745,9 +1698,7 @@ def handle_location(update: Update, context):
             emp_name = row.get("Short Name", "Unknown")
             break
 
-    # Send chat ID notification when signing in
-    if action == "signin":
-        send_chat_id_notification(update, emp_name, context.user_data["outlet_code"])
+
 
     if action == "signout":
         sign_in_str = context.user_data["sheet"].cell(
