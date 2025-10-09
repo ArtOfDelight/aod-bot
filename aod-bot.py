@@ -1073,7 +1073,7 @@ def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount):
         
         # Verify headers
         headers = sheet.row_values(1)
-        expected_headers = ["Travel ID", "Date", "Employee", "Outlet", "Going Amount", "Coming Amount"]
+        expected_headers = ["Travel ID", "Date", "Employee ID", "Outlet", "Going Amount", "Coming Amount"]
         
         if not headers or headers != expected_headers:
             print("Setting up Travel Allowance sheet headers")
@@ -1087,9 +1087,9 @@ def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount):
         
         for idx, record in enumerate(all_records, start=2):  # start=2 because row 1 is headers
             if (str(record.get("Date", "")).strip() == current_date and 
-                str(record.get("Employee", "")).strip().lower() == emp_name.lower()):
+                str(record.get("Employee ID", "")).strip() == emp_id):
                 existing_row_index = idx
-                print(f"Found existing row at index {idx} for {emp_name} on {current_date}")
+                print(f"Found existing row at index {idx} for Employee ID {emp_id} on {current_date}")
                 break
         
         if existing_row_index:
@@ -1114,14 +1114,14 @@ def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount):
             row_data = [
                 travel_id,
                 current_date,
-                emp_name,
+                emp_id,  # Changed from emp_name to emp_id
                 outlet,
                 going_amount,
                 coming_amount
             ]
             
             sheet.append_row(row_data)
-            print(f"Created new travel row: {travel_id} - {emp_name} - {trip_type}: ₹{amount}")
+            print(f"Created new travel row: {travel_id} - Employee ID {emp_id} - {trip_type}: ₹{amount}")
         
         return True
         
