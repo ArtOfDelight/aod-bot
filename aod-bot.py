@@ -59,6 +59,8 @@ SHEET_NAME = "AOD Master App"
 TICKET_SHEET_ID = "1FYXr8Wz0ddN3mFi-0AQbI6J_noi2glPbJLh44CEMUnE"
 ALLOWANCE_SHEET_ID = "1XmKondedSs_c6PZflanfB8OFUsGxVoqi5pUPvscT8cs"
 TRAVEL_SHEET_ID = "1FYXr8Wz0ddN3mFi-0AQbI6J_noi2glPbJLh44CEMUnE"  # Travel Allowance sheet
+POWER_STATUS_SHEET_ID = "1LWUBiFNKWXMKAGvUFfyoxFpR42LcRr2Zsl9JYgMIKPs"
+TAB_POWER_STATUS = "Form responses 1"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Add this after ALLOWANCE_SHEET_ID
 TAB_NAME_TRAVEL = "Travel Allowance"
 TAB_NAME_ROSTER = "Roster"
@@ -125,6 +127,10 @@ reminder_lock = threading.Lock()
 # Global variables for checklist reminder tracking
 checklist_reminder_status = {}  # Format: {slot: {"last_reminder": datetime}}
 checklist_reminder_lock = threading.Lock()
+
+# Global variables for power status reminder tracking
+power_status_reminders = {}  # Format: {outlet: {"user_chat_id": id, "emp_name": name, "off_time": datetime, "last_reminder": datetime}}
+power_status_lock = threading.Lock()
 
 # === Flask + Telegram Setup ===
 app = Flask(__name__)
@@ -211,7 +217,7 @@ drive = setup_drive()
 ASK_ACTION, ASK_PHONE, ASK_LOCATION = range(3)
 CHECKLIST_ASK_CONTACT, CHECKLIST_ASK_SLOT, CHECKLIST_ASK_QUESTION, CHECKLIST_ASK_IMAGE = range(10, 14)
 TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_SUBTYPE, TICKET_ASK_ISSUE = range(20, 24)
-ALLOWANCE_ASK_CONTACT, ALLOWANCE_ASK_TRIP_TYPE, ALLOWANCE_ASK_IMAGE = range(30, 33)  # Added TICKET_ASK_SUBTYPE
+ALLOWANCE_ASK_CONTACT, ALLOWANCE_ASK_TRIP_TYPE, ALLOWANCE_ASK_IMAGE = range(30, 33), POWER_ASK_CONTACT, POWER_ASK_STATUS, POWER_ASK_REASON = range(40, 43)  # Added TICKET_ASK_SUBTYPE
 
 # === Checklist Reminder Functions ===
 def send_checklist_reminder_to_groups(slot):
@@ -313,6 +319,267 @@ def check_and_send_checklist_reminders():
                     
     except Exception as e:
         print(f"Error in check_and_send_checklist_reminders: {e}")
+
+def check_and_send_power_reminders():
+    """Check if any outlets need power ON reminders (every 30 minutes after OFF)"""
+    try:
+        now = datetime.datetime.now(INDIA_TZ)
+        
+        with power_status_lock:
+            outlets_to_remove = []
+            
+            for outlet, reminder_data in power_status_reminders.items():
+                off_time = reminder_data.get("off_time")
+                last_reminder = reminder_data.get("last_reminder")
+                user_chat_id = reminder_data.get("user_chat_id")
+                emp_name = reminder_data.get("emp_name")
+                
+                # Calculate time since power was turned off
+                time_since_off = now - off_time
+                
+                # Check if it's been at least 30 minutes since last reminder (or since OFF if first reminder)
+                time_since_last = now - (last_reminder if last_reminder else off_time)
+                
+                if time_since_last >= datetime.timedelta(minutes=30):
+                    # Send reminder
+                    try:
+                        minutes_off = int(time_since_off.total_seconds() / 60)
+                        message = (
+                            f"⚡ POWER REMINDER ⚡\n\n"
+                            f"Hello {emp_name}!\n"
+                            f"🏢 Outlet: {outlet}\n"
+                            f"⏰ Power has been OFF for {minutes_off} minutes\n\n"
+                            f"Please turn the power back ON using /start → 💡 Power Status"
+                        )
+                        
+                        bot.send_message(chat_id=user_chat_id, text=message)
+                        
+                        # Update last reminder time
+                        power_status_reminders[outlet]["last_reminder"] = now
+                        
+                        print(f"Sent power ON reminder to {emp_name} for outlet {outlet} (OFF for {minutes_off} mins)")
+                        
+                    except Exception as e:
+                        print(f"Failed to send power reminder to {emp_name} ({user_chat_id}): {e}")
+                
+    except Exception as e:
+        print(f"Error in check_and_send_power_reminders: {e}")
+
+def save_power_status(emp_id, emp_name, outlet, outlet_name, status, reason=""):
+    """Save power status to Google Sheet"""
+    try:
+        sheet = client.open_by_key(POWER_STATUS_SHEET_ID).worksheet(TAB_POWER_STATUS)
+        
+        # Verify headers
+        headers = sheet.row_values(1)
+        expected_headers = ["Timestamp", "Outlet", "Status", "Reason", "Outlet Name"]
+        
+        if not headers or headers != expected_headers:
+            print("Setting up Power Status sheet headers")
+            sheet.update('A1:E1', [expected_headers])
+        
+        # Format timestamp as: 13/10/2025 11:45:24
+        now = datetime.datetime.now(INDIA_TZ)
+        timestamp = now.strftime("%d/%m/%Y %H:%M:%S")
+        
+        row_data = [
+            timestamp,
+            outlet,
+            status,
+            reason,
+            outlet_name
+        ]
+        
+        sheet.append_row(row_data)
+        print(f"Saved power status: {outlet} - {status}")
+        return True
+        
+    except Exception as e:
+        print(f"Error saving power status: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def get_outlet_name(outlet_code):
+    """Get full outlet name from outlet code"""
+    try:
+        sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_OUTLETS)
+        records = sheet.get_all_records()
+        for row in records:
+            if str(row.get("Outlet Code")).strip().upper() == outlet_code.strip().upper():
+                return str(row.get("Outlet Name", "")).strip()
+        return outlet_code  # Return code if name not found
+    except:
+        return outlet_code
+
+# Add these handlers after the allowance handlers (around line 1100)
+def power_handle_contact(update: Update, context):
+    """Handle contact verification for power status"""
+    print("Handling power status contact verification")
+    if not update.message.contact:
+        update.message.reply_text("❌ Please use the button to send your contact.")
+        return POWER_ASK_CONTACT
+    
+    phone = normalize_number(update.message.contact.phone_number)
+    emp_name, outlet_code = get_employee_info(phone)
+    
+    if emp_name == "Unknown" or not outlet_code:
+        update.message.reply_text(
+            "❌ You're not rostered today or not registered.\n"
+            "Please contact your manager.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+    
+    # Get employee ID
+    emp_id = ""
+    short_name = emp_name
+    try:
+        emp_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
+        emp_records = emp_sheet.get_all_records()
+        for row in emp_records:
+            row_phone = normalize_number(str(row.get("Phone Number", "")))
+            if row_phone == phone:
+                emp_id = str(row.get("Employee ID", ""))
+                short_name = str(row.get("Short Name", ""))
+                break
+    except:
+        pass
+    
+    # Get full outlet name
+    outlet_name = get_outlet_name(outlet_code)
+    
+    # Get user's chat ID
+    user_chat_id = update.message.from_user.id
+    
+    context.user_data.update({
+        "emp_name": emp_name,
+        "emp_id": emp_id,
+        "short_name": short_name,
+        "outlet": outlet_code,
+        "outlet_name": outlet_name,
+        "user_chat_id": user_chat_id
+    })
+    
+    print(f"Power status contact verified: {short_name} at {outlet_code}")
+    
+    # Show ON/OFF options
+    keyboard = [
+        ["🟢 Turn Power ON", "🔴 Turn Power OFF"]
+    ]
+    update.message.reply_text(
+        f"✅ Verified: {short_name}\n"
+        f"🏢 Outlet: {outlet_name}\n\n"
+        f"⚡ What would you like to do?",
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    )
+    
+    return POWER_ASK_STATUS
+
+def power_handle_status(update: Update, context):
+    """Handle power status selection"""
+    status_text = update.message.text
+    
+    if "ON" in status_text or "🟢" in status_text:
+        status = "ON"
+        # No reason needed for ON, save immediately
+        success = save_power_status(
+            context.user_data["emp_id"],
+            context.user_data["emp_name"],
+            context.user_data["outlet"],
+            context.user_data["outlet_name"],
+            status,
+            ""
+        )
+        
+        if success:
+            # Stop reminders for this outlet
+            outlet_code = context.user_data["outlet"]
+            with power_status_lock:
+                if outlet_code in power_status_reminders:
+                    del power_status_reminders[outlet_code]
+                    print(f"Stopped power reminders for outlet {outlet_code}")
+            
+            update.message.reply_text(
+                f"✅ Power turned ON successfully!\n\n"
+                f"🏢 Outlet: {context.user_data['outlet_name']}\n"
+                f"⚡ Status: {status}\n"
+                f"📅 Time: {datetime.datetime.now(INDIA_TZ).strftime('%d/%m/%Y %H:%M:%S')}\n\n"
+                f"Use /start for other options.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        else:
+            update.message.reply_text(
+                "❌ Error saving status. Please try again or contact admin.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        
+        return ConversationHandler.END
+        
+    elif "OFF" in status_text or "🔴" in status_text:
+        context.user_data["power_status"] = "OFF"
+        update.message.reply_text(
+            "❓ Please provide a reason for turning the power OFF:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return POWER_ASK_REASON
+    
+    else:
+        update.message.reply_text("❌ Please select a valid option.")
+        return POWER_ASK_STATUS
+
+def power_handle_reason(update: Update, context):
+    """Handle reason input for power OFF"""
+    reason = update.message.text.strip()
+    
+    if not reason or len(reason) < 3:
+        update.message.reply_text("❌ Please provide a valid reason (at least 3 characters).")
+        return POWER_ASK_REASON
+    
+    context.user_data["power_reason"] = reason
+    status = context.user_data["power_status"]
+    
+    success = save_power_status(
+        context.user_data["emp_id"],
+        context.user_data["emp_name"],
+        context.user_data["outlet"],
+        context.user_data["outlet_name"],
+        status,
+        reason
+    )
+    
+    if success:
+        # Start reminders for this outlet
+        outlet_code = context.user_data["outlet"]
+        now = datetime.datetime.now(INDIA_TZ)
+        
+        with power_status_lock:
+            power_status_reminders[outlet_code] = {
+                "user_chat_id": context.user_data["user_chat_id"],
+                "emp_name": context.user_data["short_name"],
+                "off_time": now,
+                "last_reminder": None  # First reminder will be after 30 mins
+            }
+        
+        print(f"Started power reminders for outlet {outlet_code}")
+        
+        update.message.reply_text(
+            f"✅ Power turned OFF successfully!\n\n"
+            f"🏢 Outlet: {context.user_data['outlet_name']}\n"
+            f"⚡ Status: {status}\n"
+            f"📝 Reason: {reason}\n"
+            f"📅 Time: {datetime.datetime.now(INDIA_TZ).strftime('%d/%m/%Y %H:%M:%S')}\n\n"
+            f"⏰ You'll receive reminders every 30 minutes to turn the power back ON.\n\n"
+            f"Use /start to turn it back ON when ready.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    else:
+        update.message.reply_text(
+            "❌ Error saving status. Please try again or contact admin.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    
+    return ConversationHandler.END
 
 # === Sign-In Reminder Functions ===
 def get_employee_chat_id(emp_id, short_name):
@@ -435,7 +702,7 @@ def send_signin_reminder(chat_id, emp_name, outlet, start_time):
 
 def reminder_worker():
     """Background worker that runs reminder checks every minute"""
-    print("Sign-in and checklist reminder service started")
+    print("Sign-in, checklist, and power status reminder service started")
     while True:
         try:
             # Check sign-in reminders
@@ -444,10 +711,14 @@ def reminder_worker():
             # Check checklist reminders
             check_and_send_checklist_reminders()
             
+            # Check power status reminders
+            check_and_send_power_reminders()
+            
             time.sleep(60)  # Check every minute
         except Exception as e:
             print(f"Error in reminder_worker: {e}")
             time.sleep(60)
+
 
 # Start the reminder worker thread
 reminder_thread = threading.Thread(target=reminder_worker, daemon=True)
@@ -1615,7 +1886,8 @@ def start(update: Update, context):
         [InlineKeyboardButton("🔴 Sign Out", callback_data="signout")],
         [InlineKeyboardButton("📋 Fill Checklist", callback_data="checklist")],
         [InlineKeyboardButton("🎫 Raise Ticket", callback_data="ticket")],
-        [InlineKeyboardButton("💰 Reimbursements", callback_data="allowance")]  # NEW LINE
+        [InlineKeyboardButton("💰 Reimbursements", callback_data="allowance")],
+        [InlineKeyboardButton("💡 Power Status", callback_data="power")]  # NEW LINE
     ])
     update.message.reply_text("Welcome! What would you like to do today?", reply_markup=buttons)
     return ASK_ACTION
@@ -1632,9 +1904,12 @@ def action_selected(update: Update, context):
     elif query.data == "ticket":
         query.message.reply_text("Please verify your phone number to raise a ticket:", reply_markup=markup)
         return TICKET_ASK_CONTACT
-    elif query.data == "allowance":  # NEW BLOCK
+    elif query.data == "allowance":
         query.message.reply_text("Please verify your phone number to submit allowance:", reply_markup=markup)
         return ALLOWANCE_ASK_CONTACT
+    elif query.data == "power":  # NEW BLOCK
+        query.message.reply_text("Please verify your phone number for power status:", reply_markup=markup)
+        return POWER_ASK_CONTACT
     query.message.reply_text("Please verify your phone number:", reply_markup=markup)
     return ASK_PHONE
 
@@ -2989,7 +3264,10 @@ def setup_dispatcher():
             TICKET_ASK_ISSUE: [MessageHandler(Filters.text | Filters.photo, ticket_handle_issue)],
             ALLOWANCE_ASK_CONTACT: [MessageHandler(Filters.contact, allowance_handle_contact)],
             ALLOWANCE_ASK_TRIP_TYPE: [MessageHandler(Filters.text & ~Filters.command, allowance_handle_trip_type)],
-            ALLOWANCE_ASK_IMAGE: [MessageHandler(Filters.photo | Filters.text, allowance_handle_image)]
+            ALLOWANCE_ASK_IMAGE: [MessageHandler(Filters.photo | Filters.text, allowance_handle_image)],
+            POWER_ASK_CONTACT: [MessageHandler(Filters.contact, power_handle_contact)],  # NEW LINES
+            POWER_ASK_STATUS: [MessageHandler(Filters.text & ~Filters.command, power_handle_status)],
+            POWER_ASK_REASON: [MessageHandler(Filters.text & ~Filters.command, power_handle_reason)]
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
