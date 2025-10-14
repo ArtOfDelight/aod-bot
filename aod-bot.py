@@ -371,23 +371,22 @@ def save_power_status(emp_id, emp_name, outlet, outlet_name, status, reason=""):
     try:
         sheet = client.open_by_key(POWER_STATUS_SHEET_ID).worksheet(TAB_POWER_STATUS)
         
-        # Verify headers (column 3 empty, outlet name in column 4)
+        # Verify headers (removed Outlet Code)
         headers = sheet.row_values(1)
-        expected_headers = ["Timestamp", "Status", "", "Outlet Name"]
+        expected_headers = ["Timestamp", "Status", "Outlet Name"]
         
         if not headers or headers != expected_headers:
             print("Setting up Power Status sheet headers")
-            sheet.update('A1:D1', [expected_headers])
+            sheet.update('A1:C1', [expected_headers])
         
         # Create timestamp as string
         now = datetime.datetime.now(INDIA_TZ)
         timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
         
         row_data = [
-            timestamp,      # Column 1: Timestamp
-            status,         # Column 2: Status (Power On/Power Off)
-            "",             # Column 3: Empty
-            outlet_name     # Column 4: Outlet Name
+            timestamp,      # Timestamp
+            status,         # Status (Power On/Power Off)
+            outlet_name     # Outlet Name
         ]
         
         # Append the row
@@ -482,9 +481,9 @@ def power_handle_status(update: Update, context):
     status_text = update.message.text
     
     if "ON" in status_text or "🟢" in status_text:
-        status = "Power On"
+        status = "Power ON"
     elif "OFF" in status_text or "🔴" in status_text:
-        status = "Power Off"
+        status = "Power OFF"
     else:
         update.message.reply_text("❌ Please select a valid option.")
         return POWER_ASK_STATUS
@@ -500,52 +499,25 @@ def power_handle_status(update: Update, context):
     )
     
     if success:
-        if status == "Power On":
+        if status == "Power ON":
             # Stop reminders for this outlet
             outlet_code = context.user_data["outlet"]
             with power_status_lock:
                 if outlet_code in power_status_reminders:
                     del power_status_reminders[outlet_code]
-                    print(f"\n=== POWER ON - REMINDERS STOPPED ===")
-                    print(f"Outlet: {outlet_code} ({context.user_data['outlet_name']})")
-                    print(f"Stopped power reminders")
-                    print(f"====================================\n")
-        else:  # Power Off
-            # Start reminders for this outlet - send to GROUP instead of user
+                    print(f"Stopped power reminders for outlet {outlet_code}")
+        else:  # OFF
+            # Start reminders for this outlet
             outlet_code = context.user_data["outlet"]
-            outlet_name = context.user_data["outlet_name"]
             now = datetime.datetime.now(INDIA_TZ)
-            
-            # Find the group chat ID for this outlet
-            group_chat_id = CHECKLIST_REMINDER_GROUPS.get(outlet_name)
-            
-            if not group_chat_id:
-                print(f"⚠️ WARNING: No group chat ID found for outlet '{outlet_name}'")
-                update.message.reply_text(
-                    f"✅ Power status saved, but reminders are not configured for {outlet_name}.",
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                return ConversationHandler.END
             
             with power_status_lock:
                 power_status_reminders[outlet_code] = {
-                    "group_chat_id": group_chat_id,  # ← Changed from user_chat_id
-                    "outlet_name": outlet_name,       # ← Store outlet name
+                    "user_chat_id": context.user_data["user_chat_id"],
                     "emp_name": context.user_data["short_name"],
                     "off_time": now,
                     "last_reminder": None
                 }
-            
-            # DEBUG: Confirm what was saved
-            print(f"\n=== POWER OFF REGISTERED ===")
-            print(f"Outlet Code: {outlet_code}")
-            print(f"Outlet Name: {outlet_name}")
-            print(f"Group Chat ID: {group_chat_id}")
-            print(f"Employee: {context.user_data['short_name']}")
-            print(f"OFF Time: {now.strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"Reminders will be sent to GROUP chat_id: {group_chat_id}")
-            print(f"Total outlets with power OFF: {len(power_status_reminders)}")
-            print(f"=========================\n")
             
             print(f"Started power reminders for outlet {outlet_code}")
         
@@ -554,7 +526,7 @@ def power_handle_status(update: Update, context):
             f"🏢 Outlet: {context.user_data['outlet_name']}\n"
             f"⚡ Status: {status}\n"
             f"📅 Time: {datetime.datetime.now(INDIA_TZ).strftime('%d/%m/%Y %H:%M:%S')}\n\n"
-            f"{'⏰ The outlet group will receive reminders every 30 SECONDS (testing mode) to turn the power back ON.' if status == 'Power Off' else ''}\n"
+            f"{'⏰ You will receive reminders every 30 minutes to turn the power back ON.' if status == 'OFF' else ''}\n"
             f"Use /start for other options.",
             reply_markup=ReplyKeyboardRemove()
         )
@@ -565,6 +537,7 @@ def power_handle_status(update: Update, context):
         )
     
     return ConversationHandler.END
+
 
 
 # === Sign-In Reminder Functions ===
@@ -587,75 +560,85 @@ def get_employee_chat_id(emp_id, short_name):
     return None
 
 def check_and_send_reminders():
-    """Check if any outlets need power ON reminders (every 30 seconds after OFF for testing)"""
+    """Check if any employee needs a sign-in reminder and send it"""
     try:
         now = datetime.datetime.now(INDIA_TZ)
+        current_time = now.time()
+        current_date = now.strftime("%d/%m/%Y")
         
-        # DEBUG: Log the check
-        if power_status_reminders:
-            print(f"\n=== POWER REMINDER CHECK at {now.strftime('%H:%M:%S')} ===")
-            print(f"Number of outlets with power OFF: {len(power_status_reminders)}")
+        # Get today's roster
+        gc = gspread.authorize(ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE))
+        roster_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_ROSTER)
+        emp_sheet = gc.open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
         
-        with power_status_lock:
-            for outlet, reminder_data in power_status_reminders.items():
-                off_time = reminder_data.get("off_time")
-                last_reminder = reminder_data.get("last_reminder")
-                group_chat_id = reminder_data.get("group_chat_id")  # ← Changed from user_chat_id
-                outlet_name = reminder_data.get("outlet_name")      # ← Get outlet name
-                emp_name = reminder_data.get("emp_name")
+        roster_records = roster_sheet.get_all_records()
+        emp_records = emp_sheet.get_all_records()
+        
+        # Create employee ID to name mapping
+        emp_id_to_name = {
+            str(row.get("Employee ID")).strip(): row.get("Short Name", "")
+            for row in emp_records if row.get("Employee ID")
+        }
+        
+        for row in roster_records:
+            if str(row.get("Date", "")).strip() != current_date:
+                continue
                 
-                # DEBUG: Log outlet status
-                print(f"\nOutlet Code: {outlet}")
-                print(f"Outlet Name: {outlet_name}")
-                print(f"  Employee who turned OFF: {emp_name}")
-                print(f"  Group Chat ID: {group_chat_id}")
-                print(f"  Power OFF at: {off_time.strftime('%H:%M:%S')}")
-                print(f"  Last reminder: {last_reminder.strftime('%H:%M:%S') if last_reminder else 'Never'}")
+            emp_id = str(row.get("Employee ID", "")).strip()
+            short_name = emp_id_to_name.get(emp_id, "")
+            outlet = str(row.get("Outlet", "")).strip()
+            start_time_str = str(row.get("Start Time", "")).strip()
+            signin_time = str(row.get("Sign-In Time", "")).strip()
+            
+            # Skip if no start time, weekly off, or already signed in
+            if not start_time_str or start_time_str == "N/A" or outlet.lower() == "wo" or signin_time:
+                continue
                 
-                # Calculate time since power was turned off
-                time_since_off = now - off_time
-                seconds_since_off = int(time_since_off.total_seconds())
-                
-                # Check if it's been at least 30 SECONDS since last reminder
-                time_since_last = now - (last_reminder if last_reminder else off_time)
-                seconds_since_last = int(time_since_last.total_seconds())
-                
-                print(f"  Seconds since OFF: {seconds_since_off}")
-                print(f"  Seconds since last reminder: {seconds_since_last}")
-                
-                # CHANGED: 30 minutes to 30 seconds for testing
-                if time_since_last >= datetime.timedelta(seconds=30):
-                    # Send reminder to GROUP
-                    try:
-                        minutes_off = int(time_since_off.total_seconds() / 60)
-                        message = (
-                            f"⚡ POWER REMINDER ⚡\n\n"
-                            f"🏢 Outlet: {outlet_name}\n"
-                            f"👤 Power turned OFF by: {emp_name}\n"
-                            f"⏰ Power has been OFF for {seconds_since_off} seconds ({minutes_off} minutes)\n\n"
-                            f"⚠️ Please turn the power back ON immediately!\n"
-                            f"Use @attaodbot → /start → 💡 Power Status"
-                        )
+            try:
+                start_time = datetime.datetime.strptime(start_time_str, "%H:%M:%S").time()
+            except ValueError:
+                print(f"Invalid start time format for {emp_id}: {start_time_str}")
+                continue
+            
+            # Calculate reminder time (start time + 10 minutes)
+            start_datetime = datetime.datetime.combine(now.date(), start_time)
+            reminder_time = (start_datetime + datetime.timedelta(minutes=10)).time()
+            
+            # Check if it's time for a reminder (within 1 minute window)
+            if current_time >= reminder_time:
+                # Check if we need to send a reminder
+                with reminder_lock:
+                    emp_status = reminder_status.get(emp_id, {})
+                    last_reminder = emp_status.get("last_reminder")
+                    reminders_sent = emp_status.get("reminders_sent", 0)
+                    
+                    # Send reminder if:
+                    # 1. Never sent before, OR
+                    # 2. Last reminder was more than 10 minutes ago
+                    should_send = (
+                        last_reminder is None or 
+                        now - last_reminder >= datetime.timedelta(minutes=10)
+                    )
+                    
+                    # Stop sending after 6 reminders (1 hour)
+                    if reminders_sent >= 6:
+                        should_send = False
+                    
+                    if should_send:
+                        chat_id = get_employee_chat_id(emp_id, short_name)
+                        if chat_id:
+                            send_signin_reminder(chat_id, short_name, outlet, start_time_str)
+                            
+                            # Update reminder status
+                            reminder_status[emp_id] = {
+                                "last_reminder": now,
+                                "reminders_sent": reminders_sent + 1
+                            }
+                            
+                            print(f"Sent reminder {reminders_sent + 1} to {short_name} ({emp_id})")
                         
-                        print(f"  ✅ SENDING REMINDER to GROUP chat_id: {group_chat_id}")
-                        bot.send_message(chat_id=group_chat_id, text=message)
-                        
-                        # Update last reminder time
-                        power_status_reminders[outlet]["last_reminder"] = now
-                        
-                        print(f"  ✅ Reminder sent successfully to {outlet_name} group!")
-                        
-                    except Exception as e:
-                        print(f"  ❌ FAILED to send reminder to group: {e}")
-                        import traceback
-                        traceback.print_exc()
-                else:
-                    print(f"  ⏳ Not time yet (need {30 - seconds_since_last} more seconds)")
-                
     except Exception as e:
-        print(f"Error in check_and_send_power_reminders: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Error in check_and_send_reminders: {e}")
 
 def send_signin_reminder(chat_id, emp_name, outlet, start_time):
     """Send sign-in reminder to an employee"""
