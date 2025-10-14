@@ -371,13 +371,13 @@ def save_power_status(emp_id, emp_name, outlet, outlet_name, status, reason=""):
     try:
         sheet = client.open_by_key(POWER_STATUS_SHEET_ID).worksheet(TAB_POWER_STATUS)
         
-        # Verify headers (removed Outlet Code)
+        # Verify headers (3rd column empty)
         headers = sheet.row_values(1)
-        expected_headers = ["Timestamp", "Status", "Outlet Name"]
+        expected_headers = ["Timestamp", "Status", "", "Outlet Name"]
         
         if not headers or headers != expected_headers:
             print("Setting up Power Status sheet headers")
-            sheet.update('A1:C1', [expected_headers])
+            sheet.update('A1:D1', [expected_headers])
         
         # Create timestamp as string
         now = datetime.datetime.now(INDIA_TZ)
@@ -386,6 +386,7 @@ def save_power_status(emp_id, emp_name, outlet, outlet_name, status, reason=""):
         row_data = [
             timestamp,      # Timestamp
             status,         # Status (Power On/Power Off)
+            "",             # Empty 3rd column
             outlet_name     # Outlet Name
         ]
         
