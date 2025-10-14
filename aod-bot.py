@@ -218,7 +218,7 @@ ASK_ACTION, ASK_PHONE, ASK_LOCATION = range(3)
 CHECKLIST_ASK_CONTACT, CHECKLIST_ASK_SLOT, CHECKLIST_ASK_QUESTION, CHECKLIST_ASK_IMAGE = range(10, 14)
 TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_SUBTYPE, TICKET_ASK_ISSUE = range(20, 24)
 ALLOWANCE_ASK_CONTACT, ALLOWANCE_ASK_TRIP_TYPE, ALLOWANCE_ASK_IMAGE = range(30, 33)
-POWER_ASK_CONTACT, POWER_ASK_STATUS, POWER_ASK_REASON = range(40, 43) # Added TICKET_ASK_SUBTYPE
+POWER_ASK_CONTACT, POWER_ASK_STATUS = range(40, 43) # Added TICKET_ASK_SUBTYPE
 
 # === Checklist Reminder Functions ===
 def send_checklist_reminder_to_groups(slot):
@@ -373,7 +373,7 @@ def save_power_status(emp_id, emp_name, outlet, outlet_name, status, reason=""):
         
         # Verify headers
         headers = sheet.row_values(1)
-        expected_headers = ["Timestamp", "Status", "Reason", "Outlet Name"]
+        expected_headers = ["Timestamp", "Status", "Outlet Name"]
         
         if not headers or headers != expected_headers:
             print("Setting up Power Status sheet headers")
@@ -484,95 +484,52 @@ def power_handle_status(update: Update, context):
     
     if "ON" in status_text or "🟢" in status_text:
         status = "ON"
-        # No reason needed for ON, save immediately
-        success = save_power_status(
-            context.user_data["emp_id"],
-            context.user_data["emp_name"],
-            context.user_data["outlet"],
-            context.user_data["outlet_name"],
-            status,
-            ""
-        )
-        
-        if success:
-            # Stop reminders for this outlet
-            outlet_code = context.user_data["outlet"]
-            with power_status_lock:
-                if outlet_code in power_status_reminders:
-                    del power_status_reminders[outlet_code]
-                    print(f"Stopped power reminders for outlet {outlet_code}")
-            
-            update.message.reply_text(
-                f"✅ Power turned ON successfully!\n\n"
-                f"🏢 Outlet: {context.user_data['outlet_name']}\n"
-                f"⚡ Status: {status}\n"
-                f"📅 Time: {datetime.datetime.now(INDIA_TZ).strftime('%d/%m/%Y %H:%M:%S')}\n\n"
-                f"Use /start for other options.",
-                reply_markup=ReplyKeyboardRemove()
-            )
-        else:
-            update.message.reply_text(
-                "❌ Error saving status. Please try again or contact admin.",
-                reply_markup=ReplyKeyboardRemove()
-            )
-        
-        return ConversationHandler.END
-        
     elif "OFF" in status_text or "🔴" in status_text:
-        context.user_data["power_status"] = "OFF"
-        update.message.reply_text(
-            "❓ Please provide a reason for turning the power OFF:",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return POWER_ASK_REASON
-    
+        status = "OFF"
     else:
         update.message.reply_text("❌ Please select a valid option.")
         return POWER_ASK_STATUS
-
-def power_handle_reason(update: Update, context):
-    """Handle reason input for power OFF"""
-    reason = update.message.text.strip()
     
-    if not reason or len(reason) < 3:
-        update.message.reply_text("❌ Please provide a valid reason (at least 3 characters).")
-        return POWER_ASK_REASON
-    
-    context.user_data["power_reason"] = reason
-    status = context.user_data["power_status"]
-    
+    # Save immediately for both ON and OFF (no reason needed)
     success = save_power_status(
         context.user_data["emp_id"],
         context.user_data["emp_name"],
         context.user_data["outlet"],
         context.user_data["outlet_name"],
         status,
-        reason
+        ""  # Empty reason
     )
     
     if success:
-        # Start reminders for this outlet
-        outlet_code = context.user_data["outlet"]
-        now = datetime.datetime.now(INDIA_TZ)
-        
-        with power_status_lock:
-            power_status_reminders[outlet_code] = {
-                "user_chat_id": context.user_data["user_chat_id"],
-                "emp_name": context.user_data["short_name"],
-                "off_time": now,
-                "last_reminder": None  # First reminder will be after 30 mins
-            }
-        
-        print(f"Started power reminders for outlet {outlet_code}")
+        if status == "ON":
+            # Stop reminders for this outlet
+            outlet_code = context.user_data["outlet"]
+            with power_status_lock:
+                if outlet_code in power_status_reminders:
+                    del power_status_reminders[outlet_code]
+                    print(f"Stopped power reminders for outlet {outlet_code}")
+        else:  # OFF
+            # Start reminders for this outlet
+            outlet_code = context.user_data["outlet"]
+            now = datetime.datetime.now(INDIA_TZ)
+            
+            with power_status_lock:
+                power_status_reminders[outlet_code] = {
+                    "user_chat_id": context.user_data["user_chat_id"],
+                    "emp_name": context.user_data["short_name"],
+                    "off_time": now,
+                    "last_reminder": None
+                }
+            
+            print(f"Started power reminders for outlet {outlet_code}")
         
         update.message.reply_text(
-            f"✅ Power turned OFF successfully!\n\n"
+            f"✅ Power turned {status} successfully!\n\n"
             f"🏢 Outlet: {context.user_data['outlet_name']}\n"
             f"⚡ Status: {status}\n"
-            f"📝 Reason: {reason}\n"
             f"📅 Time: {datetime.datetime.now(INDIA_TZ).strftime('%d/%m/%Y %H:%M:%S')}\n\n"
-            f"⏰ You'll receive reminders every 30 minutes to turn the power back ON.\n\n"
-            f"Use /start to turn it back ON when ready.",
+            f"{'⏰ You will receive reminders every 30 minutes to turn the power back ON.' if status == 'OFF' else ''}\n"
+            f"Use /start for other options.",
             reply_markup=ReplyKeyboardRemove()
         )
     else:
@@ -582,6 +539,8 @@ def power_handle_reason(update: Update, context):
         )
     
     return ConversationHandler.END
+
+
 
 # === Sign-In Reminder Functions ===
 def get_employee_chat_id(emp_id, short_name):
@@ -3268,8 +3227,8 @@ def setup_dispatcher():
             ALLOWANCE_ASK_TRIP_TYPE: [MessageHandler(Filters.text & ~Filters.command, allowance_handle_trip_type)],
             ALLOWANCE_ASK_IMAGE: [MessageHandler(Filters.photo | Filters.text, allowance_handle_image)],
             POWER_ASK_CONTACT: [MessageHandler(Filters.contact, power_handle_contact)],  # NEW LINES
-            POWER_ASK_STATUS: [MessageHandler(Filters.text & ~Filters.command, power_handle_status)],
-            POWER_ASK_REASON: [MessageHandler(Filters.text & ~Filters.command, power_handle_reason)]
+            POWER_ASK_STATUS: [MessageHandler(Filters.text & ~Filters.command, power_handle_status)]
+            
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
