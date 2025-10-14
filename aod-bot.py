@@ -553,7 +553,6 @@ def power_handle_status(update: Update, context):
     return ConversationHandler.END
 
 
-
 # === Sign-In Reminder Functions ===
 def get_employee_chat_id(emp_id, short_name):
     """Get chat ID for an employee using both emp_id and short_name"""
