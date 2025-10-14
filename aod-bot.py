@@ -506,7 +506,10 @@ def power_handle_status(update: Update, context):
             with power_status_lock:
                 if outlet_code in power_status_reminders:
                     del power_status_reminders[outlet_code]
+                    print(f"\n=== POWER ON - REMINDERS STOPPED ===")
+                    print(f"Outlet: {outlet_code}")
                     print(f"Stopped power reminders for outlet {outlet_code}")
+                    print(f"====================================\n")
         else:  # Power Off
             # Start reminders for this outlet
             outlet_code = context.user_data["outlet"]
@@ -520,6 +523,16 @@ def power_handle_status(update: Update, context):
                     "last_reminder": None
                 }
             
+            # DEBUG: Confirm what was saved
+            print(f"\n=== POWER OFF REGISTERED ===")
+            print(f"Outlet: {outlet_code}")
+            print(f"User Chat ID: {context.user_data['user_chat_id']}")
+            print(f"Employee: {context.user_data['short_name']}")
+            print(f"OFF Time: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"Reminders will be sent to chat_id: {context.user_data['user_chat_id']}")
+            print(f"Total outlets with power OFF: {len(power_status_reminders)}")
+            print(f"=========================\n")
+            
             print(f"Started power reminders for outlet {outlet_code}")
         
         update.message.reply_text(
@@ -527,7 +540,7 @@ def power_handle_status(update: Update, context):
             f"🏢 Outlet: {context.user_data['outlet_name']}\n"
             f"⚡ Status: {status}\n"
             f"📅 Time: {datetime.datetime.now(INDIA_TZ).strftime('%d/%m/%Y %H:%M:%S')}\n\n"
-            f"{'⏰ You will receive reminders every 30 minutes to turn the power back ON.' if status == 'Power Off' else ''}\n"
+            f"{'⏰ You will receive reminders every 30 SECONDS (testing mode) to turn the power back ON.' if status == 'Power Off' else ''}\n"
             f"Use /start for other options.",
             reply_markup=ReplyKeyboardRemove()
         )
@@ -560,52 +573,73 @@ def get_employee_chat_id(emp_id, short_name):
     print(f"No chat ID found for employee: {emp_id} ({short_name})")
     return None
 
-def check_and_send_power_reminders():
+def check_and_send_reminders():
     """Check if any outlets need power ON reminders (every 30 seconds after OFF for testing)"""
     try:
         now = datetime.datetime.now(INDIA_TZ)
         
+        # DEBUG: Log the check
+        if power_status_reminders:
+            print(f"\n=== POWER REMINDER CHECK at {now.strftime('%H:%M:%S')} ===")
+            print(f"Number of outlets with power OFF: {len(power_status_reminders)}")
+        
         with power_status_lock:
-            outlets_to_remove = []
-            
             for outlet, reminder_data in power_status_reminders.items():
                 off_time = reminder_data.get("off_time")
                 last_reminder = reminder_data.get("last_reminder")
                 user_chat_id = reminder_data.get("user_chat_id")
                 emp_name = reminder_data.get("emp_name")
                 
+                # DEBUG: Log outlet status
+                print(f"\nOutlet: {outlet}")
+                print(f"  Employee: {emp_name}")
+                print(f"  User Chat ID: {user_chat_id}")
+                print(f"  Power OFF at: {off_time.strftime('%H:%M:%S')}")
+                print(f"  Last reminder: {last_reminder.strftime('%H:%M:%S') if last_reminder else 'Never'}")
+                
                 # Calculate time since power was turned off
                 time_since_off = now - off_time
+                seconds_since_off = int(time_since_off.total_seconds())
                 
-                # Check if it's been at least 30 SECONDS since last reminder (or since OFF if first reminder)
+                # Check if it's been at least 30 SECONDS since last reminder
                 time_since_last = now - (last_reminder if last_reminder else off_time)
+                seconds_since_last = int(time_since_last.total_seconds())
+                
+                print(f"  Seconds since OFF: {seconds_since_off}")
+                print(f"  Seconds since last reminder: {seconds_since_last}")
                 
                 # CHANGED: 30 minutes to 30 seconds for testing
                 if time_since_last >= datetime.timedelta(seconds=30):
                     # Send reminder
                     try:
                         minutes_off = int(time_since_off.total_seconds() / 60)
-                        seconds_off = int(time_since_off.total_seconds())
                         message = (
                             f"⚡ POWER REMINDER ⚡\n\n"
                             f"Hello {emp_name}!\n"
                             f"🏢 Outlet: {outlet}\n"
-                            f"⏰ Power has been OFF for {seconds_off} seconds ({minutes_off} minutes)\n\n"
+                            f"⏰ Power has been OFF for {seconds_since_off} seconds ({minutes_off} minutes)\n\n"
                             f"Please turn the power back ON using /start → 💡 Power Status"
                         )
                         
+                        print(f"  ✅ SENDING REMINDER to chat_id: {user_chat_id}")
                         bot.send_message(chat_id=user_chat_id, text=message)
                         
                         # Update last reminder time
                         power_status_reminders[outlet]["last_reminder"] = now
                         
-                        print(f"Sent power ON reminder to {emp_name} for outlet {outlet} (OFF for {seconds_off} secs)")
+                        print(f"  ✅ Reminder sent successfully!")
                         
                     except Exception as e:
-                        print(f"Failed to send power reminder to {emp_name} ({user_chat_id}): {e}")
+                        print(f"  ❌ FAILED to send reminder: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    print(f"  ⏳ Not time yet (need {30 - seconds_since_last} more seconds)")
                 
     except Exception as e:
         print(f"Error in check_and_send_power_reminders: {e}")
+        import traceback
+        traceback.print_exc()
 
 def send_signin_reminder(chat_id, emp_name, outlet, start_time):
     """Send sign-in reminder to an employee"""
