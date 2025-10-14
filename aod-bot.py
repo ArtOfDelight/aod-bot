@@ -379,20 +379,21 @@ def save_power_status(emp_id, emp_name, outlet, outlet_name, status, reason=""):
             print("Setting up Power Status sheet headers")
             sheet.update('A1:E1', [expected_headers])
         
-        # Format timestamp as: 13/10/2025 11:45:24
+        # Create datetime object (remove timezone for Google Sheets compatibility)
         now = datetime.datetime.now(INDIA_TZ)
-        timestamp = now.strftime("%d/%m/%Y %H:%M:%S")
+        timestamp = now.replace(tzinfo=None)  # ✅ Datetime object instead of string
         
         row_data = [
-            timestamp,
+            timestamp,  # Now a datetime object
             outlet,
             status,
             reason,
             outlet_name
         ]
         
-        sheet.append_row(row_data)
-        print(f"Saved power status: {outlet} - {status}")
+        # Use USER_ENTERED so Google Sheets interprets the datetime correctly
+        sheet.append_row(row_data, value_input_option='USER_ENTERED')
+        print(f"Saved power status: {outlet} - {status} at {timestamp}")
         return True
         
     except Exception as e:
