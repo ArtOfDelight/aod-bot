@@ -371,22 +371,21 @@ def save_power_status(emp_id, emp_name, outlet, outlet_name, status, reason=""):
     try:
         sheet = client.open_by_key(POWER_STATUS_SHEET_ID).worksheet(TAB_POWER_STATUS)
         
-        # Verify headers
+        # Verify headers (removed Outlet Code)
         headers = sheet.row_values(1)
-        expected_headers = ["Timestamp", "Outlet Code", "Status", "Outlet Name"]
+        expected_headers = ["Timestamp", "Status", "Outlet Name"]
         
         if not headers or headers != expected_headers:
             print("Setting up Power Status sheet headers")
-            sheet.update('A1:D1', [expected_headers])
+            sheet.update('A1:C1', [expected_headers])
         
-        # Create timestamp as string in a format Google Sheets understands
+        # Create timestamp as string
         now = datetime.datetime.now(INDIA_TZ)
-        timestamp = now.strftime("%Y-%m-%d %H:%M:%S")  # Convert to string
+        timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
         
         row_data = [
-            timestamp,      # Timestamp as string
-            outlet,         # Outlet Code
-            status,         # Status (ON/OFF)
+            timestamp,      # Timestamp
+            status,         # Status (Power On/Power Off)
             outlet_name     # Outlet Name
         ]
         
@@ -482,9 +481,9 @@ def power_handle_status(update: Update, context):
     status_text = update.message.text
     
     if "ON" in status_text or "🟢" in status_text:
-        status = "ON"
+        status = "Power On"
     elif "OFF" in status_text or "🔴" in status_text:
-        status = "OFF"
+        status = "Power Off"
     else:
         update.message.reply_text("❌ Please select a valid option.")
         return POWER_ASK_STATUS
@@ -500,14 +499,14 @@ def power_handle_status(update: Update, context):
     )
     
     if success:
-        if status == "ON":
+        if status == "Power On":
             # Stop reminders for this outlet
             outlet_code = context.user_data["outlet"]
             with power_status_lock:
                 if outlet_code in power_status_reminders:
                     del power_status_reminders[outlet_code]
                     print(f"Stopped power reminders for outlet {outlet_code}")
-        else:  # OFF
+        else:  # Power Off
             # Start reminders for this outlet
             outlet_code = context.user_data["outlet"]
             now = datetime.datetime.now(INDIA_TZ)
@@ -527,7 +526,7 @@ def power_handle_status(update: Update, context):
             f"🏢 Outlet: {context.user_data['outlet_name']}\n"
             f"⚡ Status: {status}\n"
             f"📅 Time: {datetime.datetime.now(INDIA_TZ).strftime('%d/%m/%Y %H:%M:%S')}\n\n"
-            f"{'⏰ You will receive reminders every 30 minutes to turn the power back ON.' if status == 'OFF' else ''}\n"
+            f"{'⏰ You will receive reminders every 30 minutes to turn the power back ON.' if status == 'Power Off' else ''}\n"
             f"Use /start for other options.",
             reply_markup=ReplyKeyboardRemove()
         )
