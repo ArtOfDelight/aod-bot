@@ -373,7 +373,7 @@ def save_power_status(emp_id, emp_name, outlet, outlet_name, status, reason=""):
         
         # Verify headers
         headers = sheet.row_values(1)
-        expected_headers = ["Timestamp", "Outlet", "Status", "Reason", "Outlet Name"]
+        expected_headers = ["Timestamp", "Status", "Reason", "Outlet Name"]
         
         if not headers or headers != expected_headers:
             print("Setting up Power Status sheet headers")
