@@ -341,7 +341,7 @@ def check_and_send_power_reminders():
                 # Check if it's been at least 30 minutes since last reminder (or since OFF if first reminder)
                 time_since_last = now - (last_reminder if last_reminder else off_time)
                 
-                if time_since_last >= datetime.timedelta(minutes=30):
+                if time_since_last >= datetime.timedelta(seconds=30):
                     # Send reminder
                     try:
                         minutes_off = int(time_since_off.total_seconds() / 60)
