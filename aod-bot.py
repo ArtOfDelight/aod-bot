@@ -568,6 +568,40 @@ def kitchen_handle_contact(update: Update, context):
         if not phone.startswith('+'):
             phone = '+' + phone
         
+        # ADMIN BYPASS: Skip all checks for phone number 8770662766 (AOD019)
+        if phone.endswith('8770662766') or phone == '8770662766' or phone == '+918770662766':
+            context.user_data['kitchen_employee_name'] = 'Admin'  # You can change this to your Short Name
+            context.user_data['kitchen_phone'] = phone
+            
+            # Check if there's an active activity
+            active_activity = get_active_kitchen_activity(context.user_data['kitchen_employee_name'])
+            
+            if active_activity:
+                # Show stop button if activity is active
+                keyboard = [
+                    [KeyboardButton("⏹️ Stop Current Activity")],
+                    [KeyboardButton("❌ Cancel")]
+                ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+                
+                # Calculate running duration
+                start_time = active_activity['start_time']
+                duration = calculate_running_duration(start_time)
+                
+                update.message.reply_text(
+                    f"🟢 *Active Activity*\n\n"
+                    f"Activity: *{active_activity['activity']}*\n"
+                    f"Started: {active_activity['date']} at {start_time}\n"
+                    f"Duration: {duration}\n\n"
+                    f"What would you like to do?",
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup
+                )
+                return KITCHEN_ASK_ACTION
+            else:
+                # Load activities and show start options
+                return show_kitchen_activities(update, context)
+        
         # Get employee data from EmployeeRegister sheet
         sheet = client.open_by_key(TICKET_SHEET_ID).worksheet(TAB_NAME_EMP_REGISTER)
         all_data = sheet.get_all_records()
