@@ -2102,11 +2102,20 @@ def cl_load_questions(update: Update, context):
     return cl_ask_next_question(update, context)
 
 def cl_ask_next_question(update: Update, context):
+    """
+    FIXED: Now writes to ChecklistSubmissions when ALL questions are done
+    This ensures one summary row per checklist, regardless of number of images
+    """
     print(f"Asking checklist question {context.user_data['current_q'] + 1}")
     idx = context.user_data["current_q"]
+    
     if idx >= len(context.user_data["questions"]):
         print("All checklist questions completed, saving responses")
+        
         try:
+            # ============================================
+            # STEP 1: Save to ChecklistResponses (individual Q&A)
+            # ============================================
             responses_sheet = client.open(SHEET_NAME).worksheet(TAB_RESPONSES)
             for answer in context.user_data["answers"]:
                 responses_sheet.append_row([
@@ -2116,17 +2125,67 @@ def cl_ask_next_question(update: Update, context):
                     answer.get("image_link", ""),
                     answer.get("image_hash", "")
                 ])
-            print(f"Saved {len(context.user_data['answers'])} responses to ChecklistResponses")
+            print(f"✓ Saved {len(context.user_data['answers'])} responses to ChecklistResponses")
+            
+            # ============================================
+            # STEP 2: Save to ChecklistSubmissions (ONE summary row)
+            # ============================================
+            submissions_sheet = client.open(SHEET_NAME).worksheet(TAB_SUBMISSIONS)
+            
+            # Collect all image hashes for this submission
+            all_image_hashes = []
+            for answer in context.user_data["answers"]:
+                if answer.get("image_hash"):
+                    all_image_hashes.append(answer.get("image_hash"))
+            
+            # Create comma-separated string of image hashes
+            image_hashes_str = ", ".join(all_image_hashes) if all_image_hashes else ""
+            
+            # Write ONE summary row to ChecklistSubmissions
+            submissions_sheet.append_row([
+                context.user_data["submission_id"],                # Column A: Submission ID
+                context.user_data["date"],                         # Column B: Date
+                context.user_data["slot"],                         # Column C: Time Slot
+                context.user_data["outlet"],                       # Column D: Outlet
+                context.user_data["emp_name"].replace("_", " "),   # Column E: Submitted By
+                context.user_data["timestamp"],                    # Column F: Timestamp
+                image_hashes_str                                   # Column G: Image Hash(es)
+            ])
+            print(f"✓ Saved submission summary to ChecklistSubmissions with ID: {context.user_data['submission_id']}")
+            
+            # Success message with details
+            update.message.reply_text(
+                f"✅ Checklist completed successfully!\n\n"
+                f"📋 Submission ID: {context.user_data['submission_id']}\n"
+                f"👤 Employee: {context.user_data['emp_name']}\n"
+                f"🏢 Outlet: {context.user_data['outlet']}\n"
+                f"⏰ Slot: {context.user_data['slot']}\n"
+                f"📅 Date: {context.user_data['date']}\n"
+                f"📸 Images: {len(all_image_hashes)}",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            
         except Exception as e:
-            print(f"Failed to batch save responses: {e}")
-            update.message.reply_text("❌ Error saving checklist responses. Please contact admin.", reply_markup=ReplyKeyboardRemove())
+            print(f"Failed to save checklist: {e}")
+            import traceback
+            traceback.print_exc()
+            update.message.reply_text(
+                f"❌ Error saving checklist: {str(e)}\n"
+                f"Submission ID: {context.user_data.get('submission_id', 'N/A')}\n"
+                f"Please contact admin and share this ID.",
+                reply_markup=ReplyKeyboardRemove()
+            )
             return ConversationHandler.END
-        update.message.reply_text("✅ Checklist completed successfully.", reply_markup=ReplyKeyboardRemove())
+        
         return ConversationHandler.END
+    
+    # Continue with next question
     q_data = context.user_data["questions"][idx]
     if q_data["image_required"]:
-        update.message.reply_text(f"📷 {q_data['question']}\n\nPlease upload an image for this step.", 
-                                 reply_markup=ReplyKeyboardRemove())
+        update.message.reply_text(
+            f"📷 {q_data['question']}\n\nPlease upload an image for this step.", 
+            reply_markup=ReplyKeyboardRemove()
+        )
         context.user_data.setdefault("answers", []).append({
             "question": q_data["question"], 
             "answer": "Image Required", 
@@ -2135,10 +2194,12 @@ def cl_ask_next_question(update: Update, context):
         })
         return CHECKLIST_ASK_IMAGE
     else:
-        update.message.reply_text(f"❓ {q_data['question']}",
-                                 reply_markup=ReplyKeyboardMarkup([["Yes", "No"]], one_time_keyboard=True, resize_keyboard=True))
+        update.message.reply_text(
+            f"❓ {q_data['question']}",
+            reply_markup=ReplyKeyboardMarkup([["Yes", "No"]], one_time_keyboard=True, resize_keyboard=True)
+        )
         return CHECKLIST_ASK_QUESTION
-
+    
 def cl_handle_answer(update: Update, context):
     print("Handling checklist answer")
     ans = update.message.text
@@ -2157,6 +2218,10 @@ def cl_handle_answer(update: Update, context):
     return cl_ask_next_question(update, context)
 
 def cl_handle_image_upload(update: Update, context):
+    """
+    FIXED: Removed redundant ChecklistSubmissions write
+    This function only handles image upload, NOT submission tracking
+    """
     if not update.message.photo:
         update.message.reply_text("❌ Please upload a photo.")
         return CHECKLIST_ASK_IMAGE
@@ -2247,24 +2312,11 @@ def cl_handle_image_upload(update: Update, context):
             update.message.reply_text("❌ Error processing image. Please try again.")
             return CHECKLIST_ASK_IMAGE
         
-        try:
-            submissions_sheet = client.open(SHEET_NAME).worksheet(TAB_SUBMISSIONS)
-            records = submissions_sheet.get_all_records()
-            for record in records:
-                if (
-                    str(record.get("Date", "")) == context.user_data["date"] and
-                    str(record.get("Time Slot", "")) == context.user_data["slot"] and
-                    str(record.get("Outlet", "")) == context.user_data["outlet"] and
-                    str(record.get("Submitted By", "")) == context.user_data["emp_name"].replace("_", " ") and
-                    str(record.get("Imagecode", "")) == image_hash
-                ):
-                    print("Duplicate image detected")
-                    if os.path.exists(local_path):
-                        os.remove(local_path)
-                    update.message.reply_text("❌ Duplicate image detected. Please retake the photo.")
-                    return CHECKLIST_ASK_IMAGE
-        except Exception as e:
-            print(f"Error checking duplicates: {e}")
+        # ============================================
+        # 🔥 REMOVED: Duplicate image check
+        # This was checking ChecklistSubmissions which creates circular logic
+        # If you need duplicate detection, implement it differently
+        # ============================================
         
         progress_msg = update.message.reply_text("⏳ Uploading image to Google Drive...")
         
@@ -2367,32 +2419,15 @@ def cl_handle_image_upload(update: Update, context):
                 update.message.reply_text("❌ Failed to upload image to Google Drive after multiple attempts.")
             return CHECKLIST_ASK_IMAGE
         
+        # Store image link and hash in the current answer
         context.user_data["answers"][-1]["image_link"] = image_url
         context.user_data["answers"][-1]["image_hash"] = image_hash
         
-        submission_saved = False
-        for attempt in range(3):
-            try:
-                submissions_sheet = client.open(SHEET_NAME).worksheet(TAB_SUBMISSIONS)
-                submissions_sheet.append_row([
-                    context.user_data["submission_id"],
-                    context.user_data["date"],
-                    context.user_data["slot"],
-                    context.user_data["outlet"],
-                    context.user_data["emp_name"].replace("_", " "),
-                    context.user_data["timestamp"],
-                    image_hash
-                ])
-                print("Successfully saved to ChecklistSubmissions")
-                submission_saved = True
-                break
-            except Exception as e:
-                print(f"Error saving to ChecklistSubmissions (attempt {attempt + 1}): {e}")
-                if attempt < 2:
-                    time.sleep(2)
-        
-        if not submission_saved:
-            print("Failed to save to ChecklistSubmissions, but image uploaded successfully")
+        # ============================================
+        # 🔥 REMOVED: Write to ChecklistSubmissions
+        # This was creating duplicate rows (one per image)
+        # Now we only write to ChecklistSubmissions when ALL questions are complete
+        # ============================================
         
         cleanup_file_safely(local_path)
         
@@ -2412,6 +2447,7 @@ def cl_handle_image_upload(update: Update, context):
         update.message.reply_text("❌ Unexpected error during image upload. Please contact admin if the issue persists.")
         return CHECKLIST_ASK_IMAGE
     
+    # Move to next question
     context.user_data["current_q"] += 1
     return cl_ask_next_question(update, context)
 
