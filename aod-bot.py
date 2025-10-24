@@ -75,6 +75,9 @@ TAB_NAME_ALLOWANCE = "allowance"
 LOCATION_TOLERANCE_METERS = 50
 IMAGE_FOLDER = "checklist"
 TICKET_FOLDER = "tickets"
+ACTIVITY_TRACKER_SHEET_ID = "1lQYE49QXPw4al7rSZMnaMKUytGckYYd85nico-D_weE"
+TAB_NAME_ACTIVITY = "Activity"
+TAB_NAME_ACTIVITY_BACKEND = "Activity Backend"
 
 # UPDATED FOLDER IDs - Use the new ones from the shared drive
 DRIVE_FOLDER_ID = "1FJuTky2XPUSNMAC41SOQ-TFKzSq9Wd7i"  # Checklist folder in shared drive
@@ -218,7 +221,10 @@ ASK_ACTION, ASK_PHONE, ASK_LOCATION = range(3)
 CHECKLIST_ASK_CONTACT, CHECKLIST_ASK_SLOT, CHECKLIST_ASK_QUESTION, CHECKLIST_ASK_IMAGE = range(10, 14)
 TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_SUBTYPE, TICKET_ASK_ISSUE = range(20, 24)
 ALLOWANCE_ASK_CONTACT, ALLOWANCE_ASK_TRIP_TYPE, ALLOWANCE_ASK_IMAGE = range(30, 33)
-POWER_ASK_CONTACT, POWER_ASK_STATUS = range(40, 42) # Added TICKET_ASK_SUBTYPE
+POWER_ASK_CONTACT, POWER_ASK_STATUS = range(40, 42)
+KITCHEN_ASK_CONTACT = 100
+KITCHEN_ASK_ACTION = 101
+KITCHEN_ASK_ACTIVITY = 102 # Added TICKET_ASK_SUBTYPE
 
 # === Checklist Reminder Functions ===
 def send_checklist_reminder_to_groups(slot):
@@ -539,6 +545,401 @@ def power_handle_status(update: Update, context):
     
     return ConversationHandler.END
 
+def kitchen_start(update: Update, context):
+    """Start Kitchen Activity Tracker - Ask for phone number"""
+    user_name = update.callback_query.from_user.first_name
+    
+    contact_button = KeyboardButton("📱 Share Phone Number", request_contact=True)
+    keyboard = [[contact_button]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    
+    update.callback_query.message.reply_text(
+        f"👋 Hi {user_name}!\n\n"
+        "📱 Please share your phone number to access Kitchen Activity Tracker.",
+        reply_markup=reply_markup
+    )
+    
+    return KITCHEN_ASK_CONTACT
+
+def kitchen_handle_contact(update: Update, context):
+    """Handle phone number and check if user is in Kitchen department"""
+    try:
+        phone = update.message.contact.phone_number
+        if not phone.startswith('+'):
+            phone = '+' + phone
+        
+        # Get employee data from EmployeeRegister sheet
+        sheet = client.open_by_key(TICKET_SHEET_ID).worksheet(TAB_NAME_EMP_REGISTER)
+        all_data = sheet.get_all_records()
+        
+        # Find employee by phone number
+        employee = None
+        for row in all_data:
+            emp_phone = str(row.get('Phone Number', '')).strip()
+            if not emp_phone.startswith('+'):
+                emp_phone = '+' + emp_phone
+            
+            if emp_phone == phone:
+                employee = row
+                break
+        
+        if not employee:
+            update.message.reply_text(
+                "❌ Phone number not found in employee register.\n"
+                "Please contact admin.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        # Check if employee is in Kitchen department
+        department = str(employee.get('Department', '')).strip().lower()
+        if department != 'kitchen':
+            update.message.reply_text(
+                "❌ Kitchen Activity Tracker is only available for Kitchen department employees.\n"
+                f"Your department: {employee.get('Department', 'Unknown')}",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        # Store employee info in context
+        context.user_data['kitchen_employee_name'] = employee.get('Short Name', '')
+        context.user_data['kitchen_phone'] = phone
+        
+        # Check if there's an active activity
+        active_activity = get_active_kitchen_activity(context.user_data['kitchen_employee_name'])
+        
+        if active_activity:
+            # Show stop button if activity is active
+            keyboard = [
+                [KeyboardButton("⏹️ Stop Current Activity")],
+                [KeyboardButton("❌ Cancel")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+            
+            # Calculate running duration
+            start_time = active_activity['start_time']
+            duration = calculate_running_duration(start_time)
+            
+            update.message.reply_text(
+                f"🟢 *Active Activity*\n\n"
+                f"Activity: *{active_activity['activity']}*\n"
+                f"Started: {active_activity['date']} at {start_time}\n"
+                f"Duration: {duration}\n\n"
+                f"What would you like to do?",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+            return KITCHEN_ASK_ACTION
+        else:
+            # Load activities and show start options
+            return show_kitchen_activities(update, context)
+        
+    except Exception as e:
+        print(f"Error in kitchen_handle_contact: {e}")
+        update.message.reply_text(
+            f"❌ Error: {str(e)}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+
+def show_kitchen_activities(update: Update, context):
+    """Load and show available activities for the employee"""
+    try:
+        employee_name = context.user_data['kitchen_employee_name']
+        
+        # Get activities from Activity sheet
+        sheet = client.open_by_key(ACTIVITY_TRACKER_SHEET_ID).worksheet(TAB_NAME_ACTIVITY)
+        all_data = sheet.get_all_records()
+        
+        # Find activities where employee has "Yes"
+        activities = []
+        for row in all_data:
+            activity_name = row.get('Activity', '').strip()
+            employee_value = str(row.get(employee_name, '')).strip().lower()
+            
+            if activity_name and employee_value == 'yes':
+                activities.append(activity_name)
+        
+        if not activities:
+            update.message.reply_text(
+                f"❌ No activities assigned to {employee_name}.\n"
+                "Please contact admin.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        # Create keyboard with activities
+        keyboard = [[KeyboardButton(activity)] for activity in activities]
+        keyboard.append([KeyboardButton("❌ Cancel")])
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+        
+        update.message.reply_text(
+            f"👨‍🍳 *Kitchen Activity Tracker*\n\n"
+            f"Employee: {employee_name}\n\n"
+            f"📋 Select an activity to start:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        
+        return KITCHEN_ASK_ACTIVITY
+        
+    except Exception as e:
+        print(f"Error in show_kitchen_activities: {e}")
+        update.message.reply_text(
+            f"❌ Error loading activities: {str(e)}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+
+def kitchen_handle_action(update: Update, context):
+    """Handle Stop button when activity is active"""
+    action = update.message.text.strip()
+    
+    if action == "❌ Cancel":
+        update.message.reply_text(
+            "❌ Cancelled.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+    
+    if action == "⏹️ Stop Current Activity":
+        return kitchen_stop_activity(update, context)
+    
+    update.message.reply_text(
+        "❌ Invalid option. Please try again.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
+
+def kitchen_handle_activity_selection(update: Update, context):
+    """Handle activity selection and start tracking"""
+    selected_activity = update.message.text.strip()
+    
+    if selected_activity == "❌ Cancel":
+        update.message.reply_text(
+            "❌ Cancelled.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+    
+    try:
+        employee_name = context.user_data['kitchen_employee_name']
+        
+        # Check if there's already an active activity
+        sheet = client.open_by_key(ACTIVITY_TRACKER_SHEET_ID).worksheet(TAB_NAME_ACTIVITY_BACKEND)
+        all_data = sheet.get_all_values()
+        
+        # Check for active activity (no end time)
+        headers = all_data[0]
+        name_idx = headers.index('Name')
+        end_time_idx = headers.index('End Time')
+        activity_idx = headers.index('Activity')
+        
+        for row in reversed(all_data[1:]):  # Start from bottom (most recent)
+            if row[name_idx] == employee_name and not row[end_time_idx]:
+                update.message.reply_text(
+                    f"❌ You already have an active activity: *{row[activity_idx]}*\n"
+                    "Please stop it first before starting a new one.",
+                    parse_mode='Markdown',
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return ConversationHandler.END
+        
+        # Start new activity
+        now = datetime.datetime.now(INDIA_TZ)
+        date = now.strftime('%Y-%m-%d')
+        start_time = now.strftime('%H:%M:%S')
+        
+        # Append new row with apostrophe prefix to force text format
+        new_row = [
+            employee_name,
+            "'" + date,  # Force text format
+            "'" + start_time,  # Force text format
+            '',  # End time (empty)
+            selected_activity,
+            ''  # Duration (empty until stopped)
+        ]
+        
+        sheet.append_row(new_row)
+        
+        update.message.reply_text(
+            f"✅ *Activity Started!*\n\n"
+            f"👤 Employee: {employee_name}\n"
+            f"📋 Activity: {selected_activity}\n"
+            f"📅 Date: {date}\n"
+            f"⏰ Start Time: {start_time}\n\n"
+            f"Use /start and select Kitchen to stop this activity when done.",
+            parse_mode='Markdown',
+            reply_markup=ReplyKeyboardRemove()
+        )
+        
+        return ConversationHandler.END
+        
+    except Exception as e:
+        print(f"Error in kitchen_handle_activity_selection: {e}")
+        update.message.reply_text(
+            f"❌ Error starting activity: {str(e)}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+
+def kitchen_stop_activity(update: Update, context):
+    """Stop the active activity and calculate duration"""
+    try:
+        employee_name = context.user_data['kitchen_employee_name']
+        
+        sheet = client.open_by_key(ACTIVITY_TRACKER_SHEET_ID).worksheet(TAB_NAME_ACTIVITY_BACKEND)
+        all_data = sheet.get_all_values()
+        
+        headers = all_data[0]
+        name_idx = headers.index('Name')
+        start_time_idx = headers.index('Start Time')
+        end_time_idx = headers.index('End Time')
+        activity_idx = headers.index('Activity')
+        duration_idx = headers.index('Duration')
+        
+        # Find active activity (most recent row without end time)
+        row_to_update = None
+        row_number = None
+        
+        for i in range(len(all_data) - 1, 0, -1):  # Start from bottom
+            row = all_data[i]
+            if row[name_idx] == employee_name and not row[end_time_idx]:
+                row_to_update = row
+                row_number = i + 1  # +1 for 1-based indexing
+                break
+        
+        if not row_to_update:
+            update.message.reply_text(
+                "❌ No active activity found to stop.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+        
+        # Calculate end time and duration
+        now = datetime.datetime.now(INDIA_TZ)
+        end_time = now.strftime('%H:%M:%S')
+        
+        # Get start time and calculate duration
+        start_time_str = row_to_update[start_time_idx].replace("'", "")  # Remove apostrophe
+        duration = calculate_duration(start_time_str, end_time)
+        
+        # Update the row with end time and duration (with apostrophe prefix)
+        sheet.update_cell(row_number, end_time_idx + 1, "'" + end_time)
+        sheet.update_cell(row_number, duration_idx + 1, duration)
+        
+        activity_name = row_to_update[activity_idx]
+        
+        update.message.reply_text(
+            f"✅ *Activity Stopped!*\n\n"
+            f"👤 Employee: {employee_name}\n"
+            f"📋 Activity: {activity_name}\n"
+            f"⏰ End Time: {end_time}\n"
+            f"⏱️ Duration: {duration}\n\n"
+            f"Great work! 👏",
+            parse_mode='Markdown',
+            reply_markup=ReplyKeyboardRemove()
+        )
+        
+        return ConversationHandler.END
+        
+    except Exception as e:
+        print(f"Error in kitchen_stop_activity: {e}")
+        update.message.reply_text(
+            f"❌ Error stopping activity: {str(e)}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+
+def get_active_kitchen_activity(employee_name):
+    """Check if employee has an active activity"""
+    try:
+        sheet = client.open_by_key(ACTIVITY_TRACKER_SHEET_ID).worksheet(TAB_NAME_ACTIVITY_BACKEND)
+        all_data = sheet.get_all_values()
+        
+        if len(all_data) < 2:
+            return None
+        
+        headers = all_data[0]
+        name_idx = headers.index('Name')
+        date_idx = headers.index('Date')
+        start_time_idx = headers.index('Start Time')
+        end_time_idx = headers.index('End Time')
+        activity_idx = headers.index('Activity')
+        
+        # Find most recent active activity
+        for row in reversed(all_data[1:]):
+            if row[name_idx] == employee_name and not row[end_time_idx]:
+                # Clean up apostrophes if present
+                date = row[date_idx].replace("'", "")
+                start_time = row[start_time_idx].replace("'", "")
+                
+                return {
+                    'activity': row[activity_idx],
+                    'date': date,
+                    'start_time': start_time
+                }
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error in get_active_kitchen_activity: {e}")
+        return None
+
+
+def calculate_duration(start_time_str, end_time_str):
+    """Calculate duration between start and end time"""
+    try:
+        # Parse times
+        start = datetime.datetime.strptime(start_time_str, '%H:%M:%S')
+        end = datetime.datetime.strptime(end_time_str, '%H:%M:%S')
+        
+        # Calculate difference
+        diff = end - start
+        
+        # Handle negative duration (overnight shift)
+        if diff.total_seconds() < 0:
+            diff = diff + datetime.timedelta(days=1)
+        
+        # Convert to hours and minutes
+        total_seconds = int(diff.total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        
+        return f"{hours}h {minutes}m"
+        
+    except Exception as e:
+        print(f"Error calculating duration: {e}")
+        return "N/A"
+
+
+def calculate_running_duration(start_time_str):
+    """Calculate running duration from start time to now"""
+    try:
+        now = datetime.datetime.now(INDIA_TZ)
+        
+        # Parse start time
+        start = datetime.datetime.strptime(start_time_str, '%H:%M:%S')
+        start = start.replace(year=now.year, month=now.month, day=now.day)
+        
+        # Calculate difference
+        diff = now - start
+        
+        # Convert to hours and minutes
+        total_seconds = int(diff.total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        
+        return f"{hours}h {minutes}m"
+        
+    except Exception as e:
+        print(f"Error calculating running duration: {e}")
+        return "N/A"
 
 
 # === Sign-In Reminder Functions ===
@@ -1840,16 +2241,26 @@ def get_filtered_questions(outlet_code, slot):
 
 # === Bot Handlers ===
 def start(update: Update, context):
-    print(f"Start command received from user: {update.message.from_user.id}, chat: {update.message.chat_id}")
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🟢 Sign In", callback_data="signin")],
-        [InlineKeyboardButton("🔴 Sign Out", callback_data="signout")],
-        [InlineKeyboardButton("📋 Fill Checklist", callback_data="checklist")],
-        [InlineKeyboardButton("🎫 Raise Ticket", callback_data="ticket")],
-        [InlineKeyboardButton("💰 Reimbursements", callback_data="allowance")],
-        [InlineKeyboardButton("💡 Power Status", callback_data="power")]  # NEW LINE
-    ])
-    update.message.reply_text("Welcome! What would you like to do today?", reply_markup=buttons)
+    """Start command - Show options"""
+    user_name = update.message.from_user.first_name
+    
+    keyboard = [
+        [InlineKeyboardButton("📍 Sign In/Out", callback_data="sign_in_out")],
+        [InlineKeyboardButton("✅ Checklist", callback_data="checklist")],
+        [InlineKeyboardButton("💰 Travel Allowance", callback_data="allowance")],
+        [InlineKeyboardButton("🎫 Ticket", callback_data="ticket")],
+        [InlineKeyboardButton("⚡ Power Status", callback_data="power_status")],
+        [InlineKeyboardButton("👨‍🍳 Kitchen", callback_data="kitchen")],  # ← ONLY THIS LINE IS NEW
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    update.message.reply_text(
+        f"👋 Hi {user_name}! Welcome to AOD Bot.\n\n"
+        "Please select an option:",
+        reply_markup=reply_markup
+    )
+    
     return ASK_ACTION
 
 def action_selected(update: Update, context):
@@ -1867,9 +2278,12 @@ def action_selected(update: Update, context):
     elif query.data == "allowance":
         query.message.reply_text("Please verify your phone number to submit allowance:", reply_markup=markup)
         return ALLOWANCE_ASK_CONTACT
-    elif query.data == "power":  # NEW BLOCK
+    elif query.data == "power":
         query.message.reply_text("Please verify your phone number for power status:", reply_markup=markup)
         return POWER_ASK_CONTACT
+    elif query.data == "kitchen":  # NEW BLOCK
+        query.message.reply_text("Please verify your phone number for kitchen tracker:", reply_markup=markup)
+        return KITCHEN_ASK_CONTACT
     query.message.reply_text("Please verify your phone number:", reply_markup=markup)
     return ASK_PHONE
 
@@ -3261,9 +3675,13 @@ def setup_dispatcher():
             ALLOWANCE_ASK_CONTACT: [MessageHandler(Filters.contact, allowance_handle_contact)],
             ALLOWANCE_ASK_TRIP_TYPE: [MessageHandler(Filters.text & ~Filters.command, allowance_handle_trip_type)],
             ALLOWANCE_ASK_IMAGE: [MessageHandler(Filters.photo | Filters.text, allowance_handle_image)],
-            POWER_ASK_CONTACT: [MessageHandler(Filters.contact, power_handle_contact)],  # NEW LINES
-            POWER_ASK_STATUS: [MessageHandler(Filters.text & ~Filters.command, power_handle_status)]
+            POWER_ASK_CONTACT: [MessageHandler(Filters.contact, power_handle_contact)],
+            POWER_ASK_STATUS: [MessageHandler(Filters.text & ~Filters.command, power_handle_status)],
             
+            # ← ONLY THESE 3 LINES ARE NEW
+            KITCHEN_ASK_CONTACT: [MessageHandler(Filters.contact, kitchen_handle_contact)],
+            KITCHEN_ASK_ACTION: [MessageHandler(Filters.text & ~Filters.command, kitchen_handle_action)],
+            KITCHEN_ASK_ACTIVITY: [MessageHandler(Filters.text & ~Filters.command, kitchen_handle_activity_selection)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
