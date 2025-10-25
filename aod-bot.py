@@ -2279,7 +2279,7 @@ def start(update: Update, context):
     user_name = update.message.from_user.first_name
     
     keyboard = [
-        [InlineKeyboardButton("📍 Sign In/Out", callback_data="sign_in_out")],
+        [InlineKeyboardButton("📍 Sign In", callback_data="signin"), InlineKeyboardButton("📍 Sign Out", callback_data="signout")],
         [InlineKeyboardButton("✅ Checklist", callback_data="checklist")],
         [InlineKeyboardButton("💰 Travel Allowance", callback_data="allowance")],
         [InlineKeyboardButton("🎫 Ticket", callback_data="ticket")],
