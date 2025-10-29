@@ -776,7 +776,7 @@ def kitchen_handle_activity_selection(update: Update, context):
     
     try:
         employee_name = context.user_data['kitchen_employee_name']
-        employee_code = context.user_data['kitchen_employee_code']  # ← ADDED
+        employee_code = context.user_data['kitchen_employee_code']
         
         # Check if there's already an active activity
         sheet = client.open_by_key(ACTIVITY_TRACKER_SHEET_ID).worksheet(TAB_NAME_ACTIVITY_BACKEND)
@@ -820,7 +820,7 @@ def kitchen_handle_activity_selection(update: Update, context):
         # Append new row - store Employee Code if column exists
         if use_code:
             new_row = [
-                employee_code,  # ← CHANGED: Store Employee Code
+                employee_code,  # Store Employee Code
                 date,
                 start_time,
                 '',  # End time (empty)
@@ -837,7 +837,7 @@ def kitchen_handle_activity_selection(update: Update, context):
                 ''
             ]
         
-        # Use USER_ENTERED to let Google Sheets interpret and format the values
+        # ⭐ CRITICAL: Use USER_ENTERED to let Google Sheets format date/time properly
         sheet.append_row(new_row, value_input_option='USER_ENTERED')
         
         update.message.reply_text(
@@ -865,14 +865,15 @@ def kitchen_handle_activity_selection(update: Update, context):
 
 
 # ============================================================================
-# REPLACEMENT 2: kitchen_stop_activity function (around line 1593)
+# ALSO UPDATE: kitchen_stop_activity function
+# Use batch_update with value_input_option for better performance
 # ============================================================================
 
 def kitchen_stop_activity(update: Update, context):
     """Stop the active activity and calculate duration"""
     try:
         employee_name = context.user_data['kitchen_employee_name']
-        employee_code = context.user_data['kitchen_employee_code']  # ← ADDED
+        employee_code = context.user_data['kitchen_employee_code']
         
         sheet = client.open_by_key(ACTIVITY_TRACKER_SHEET_ID).worksheet(TAB_NAME_ACTIVITY_BACKEND)
         all_data = sheet.get_all_values()
@@ -925,9 +926,19 @@ def kitchen_stop_activity(update: Update, context):
         start_time_str = row_to_update[start_time_idx].replace("'", "")  # Remove apostrophe if present (legacy data)
         duration = calculate_duration(start_time_str, end_time)
         
-        # Update the row with end time and duration (without apostrophe prefix)
-        sheet.update_cell(row_number, end_time_idx + 1, end_time)
-        sheet.update_cell(row_number, duration_idx + 1, duration)
+        # ⭐ OPTION 1: Update cells individually with USER_ENTERED
+        # This is simpler but makes 2 API calls
+        sheet.update_cell(row_number, end_time_idx + 1, end_time, value_input_option='USER_ENTERED')
+        sheet.update_cell(row_number, duration_idx + 1, duration, value_input_option='USER_ENTERED')
+        
+        # ⭐ OPTION 2 (BETTER): Batch update (only 1 API call) - UNCOMMENT TO USE
+        # from gspread.utils import rowcol_to_a1
+        # end_time_cell = rowcol_to_a1(row_number, end_time_idx + 1)
+        # duration_cell = rowcol_to_a1(row_number, duration_idx + 1)
+        # sheet.batch_update([
+        #     {'range': end_time_cell, 'values': [[end_time]]},
+        #     {'range': duration_cell, 'values': [[duration]]}
+        # ], value_input_option='USER_ENTERED')
         
         activity_name = row_to_update[activity_idx]
         
