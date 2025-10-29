@@ -1098,7 +1098,7 @@ def calculate_running_duration(start_time_str):
         hours = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
         
-        return f"{hours}h {minutes}m"
+        return f"{minutes}"
         
     except Exception as e:
         print(f"Error calculating running duration: {e}")
