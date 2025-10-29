@@ -578,37 +578,8 @@ def kitchen_handle_contact(update: Update, context):
             context.user_data['kitchen_employee_code'] = 'AOD019'
             context.user_data['kitchen_phone'] = phone
             
-            # Check if there's an active activity
-            active_activity = get_active_kitchen_activity(
-                context.user_data['kitchen_employee_code'],
-                context.user_data['kitchen_employee_name']
-            )
-            
-            if active_activity:
-                # Show stop button if activity is active
-                keyboard = [
-                    [KeyboardButton("⏹️ Stop Current Activity")],
-                    [KeyboardButton("❌ Cancel")]
-                ]
-                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-                
-                # Calculate running duration
-                start_time = active_activity['start_time']
-                duration = calculate_running_duration(start_time)
-                
-                update.message.reply_text(
-                    f"🟢 *Active Activity*\n\n"
-                    f"Activity: *{active_activity['activity']}*\n"
-                    f"Started: {active_activity['date']} at {start_time}\n"
-                    f"Duration: {duration}\n\n"
-                    f"What would you like to do?",
-                    parse_mode='Markdown',
-                    reply_markup=reply_markup
-                )
-                return KITCHEN_ASK_ACTION
-            else:
-                # Load activities and show start options
-                return show_kitchen_activities(update, context)
+            # Always go directly to activity list (simplified flow)
+            return show_kitchen_activities(update, context)
         
         # Get employee data from EmployeeRegister sheet
         sheet = client.open_by_key(TICKET_SHEET_ID).worksheet(TAB_NAME_EMP_REGISTER)
@@ -656,37 +627,8 @@ def kitchen_handle_contact(update: Update, context):
         
         print(f"✅ Employee verified: {context.user_data['kitchen_employee_name']} ({context.user_data['kitchen_employee_code']})")
         
-        # Check if there's an active activity
-        active_activity = get_active_kitchen_activity(
-            context.user_data['kitchen_employee_code'],
-            context.user_data['kitchen_employee_name']
-        )
-        
-        if active_activity:
-            # Show stop button if activity is active
-            keyboard = [
-                [KeyboardButton("⏹️ Stop Current Activity")],
-                [KeyboardButton("❌ Cancel")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-            
-            # Calculate running duration
-            start_time = active_activity['start_time']
-            duration = calculate_running_duration(start_time)
-            
-            update.message.reply_text(
-                f"🟢 *Active Activity*\n\n"
-                f"Activity: *{active_activity['activity']}*\n"
-                f"Started: {active_activity['date']} at {start_time}\n"
-                f"Duration: {duration}\n\n"
-                f"What would you like to do?",
-                parse_mode='Markdown',
-                reply_markup=reply_markup
-            )
-            return KITCHEN_ASK_ACTION
-        else:
-            # Load activities and show start options
-            return show_kitchen_activities(update, context)
+        # Always go directly to activity list (simplified flow)
+        return show_kitchen_activities(update, context)
         
     except Exception as e:
         print(f"Error in kitchen_handle_contact: {e}")
@@ -700,7 +642,7 @@ def kitchen_handle_contact(update: Update, context):
 
 
 def show_kitchen_activities(update: Update, context):
-    """Load and show available activities for the employee"""
+    """Load and show available activities for the employee with inline active activity info"""
     try:
         employee_name = context.user_data['kitchen_employee_name']
         employee_code = context.user_data['kitchen_employee_code']
@@ -739,14 +681,16 @@ def show_kitchen_activities(update: Update, context):
         # Create keyboard with activities
         keyboard = [[KeyboardButton(activity)] for activity in activities]
         
-        # Add Finished button if there's an active activity
+        # Add "✅ Finished" button ONLY if there's an active activity
         if active_activity:
-            keyboard.insert(0, [KeyboardButton("✅ Finished (Stop Current Activity)")])
+            keyboard.append([KeyboardButton("✅ Finished")])
         
+        # Always add Cancel button at the end
         keyboard.append([KeyboardButton("❌ Cancel")])
+        
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
         
-        # Show different message based on whether there's an active activity
+        # Build message with active activity info shown inline
         if active_activity:
             # Calculate running duration
             start_time = active_activity['start_time']
@@ -754,14 +698,13 @@ def show_kitchen_activities(update: Update, context):
             
             message = (
                 f"🟢 *Active Activity*\n\n"
-                f"Current: *{active_activity['activity']}*\n"
+                f"Activity: *{active_activity['activity']}*\n"
                 f"Started: {active_activity['date']} at {start_time}\n"
                 f"Duration: {duration}\n\n"
-                f"👨‍🍳 *Kitchen Activity Tracker*\n"
+                f"━━━━━━━━━━━━━━━━━\n\n"
+                f"👨‍🍳 *Select Next Activity*\n"
                 f"Employee: {employee_name} ({employee_code})\n\n"
-                f"📋 Select:\n"
-                f"• ✅ Finished - Stop current activity\n"
-                f"• Or select a new activity (auto-stops current)"
+                f"💡 Tip: Starting a new activity will automatically stop the current one."
             )
         else:
             message = (
@@ -789,7 +732,7 @@ def show_kitchen_activities(update: Update, context):
         return ConversationHandler.END
 
 def kitchen_handle_action(update: Update, context):
-    """Handle Stop button when activity is active"""
+    """Handle action when activity is already running - simplified to just show activities"""
     action = update.message.text.strip()
     
     if action == "❌ Cancel":
@@ -799,14 +742,10 @@ def kitchen_handle_action(update: Update, context):
         )
         return ConversationHandler.END
     
-    if action == "⏹️ Stop Current Activity":
-        return kitchen_stop_activity(update, context)
-    
-    update.message.reply_text(
-        "❌ Invalid option. Please try again.",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    return ConversationHandler.END
+    # This function is no longer needed since we removed the intermediate screen
+    # Just redirect to show_kitchen_activities which handles everything
+    # This is kept for backward compatibility but shouldn't be reached
+    return show_kitchen_activities(update, context)
 
 
 def kitchen_handle_activity_selection(update: Update, context):
@@ -824,8 +763,8 @@ def kitchen_handle_activity_selection(update: Update, context):
         employee_name = context.user_data['kitchen_employee_name']
         employee_code = context.user_data['kitchen_employee_code']
         
-        # Check if user clicked "Finished" button
-        if selected_activity == "✅ Finished (Stop Current Activity)":
+        # Check if user clicked "✅ Finished" button
+        if selected_activity == "✅ Finished":
             return kitchen_stop_activity(update, context)
         
         # Get the activity backend sheet
@@ -921,14 +860,14 @@ def kitchen_handle_activity_selection(update: Update, context):
         
         # If we auto-stopped a previous activity, mention it
         if active_row_number:
-            success_message.append(f"⏹️ Previous activity stopped: {active_activity_name} ({duration})\n")
+            success_message.append(f"⏹️ Stopped: {active_activity_name} ({duration})\n")
         
         success_message.extend([
             f"👤 Employee: {employee_name} ({employee_code})",
-            f"📋 Activity: {selected_activity}",
+            f"📋 New Activity: {selected_activity}",
             f"📅 Date: {date}",
             f"⏰ Start Time: {start_time}\n",
-            f"Use /start and select Kitchen to stop this activity when done."
+            f"Use /start → Kitchen to finish this activity when done."
         ])
         
         update.message.reply_text(
