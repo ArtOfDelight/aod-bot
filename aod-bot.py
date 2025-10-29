@@ -787,17 +787,18 @@ def kitchen_handle_activity_selection(update: Update, context):
         date = now.strftime('%Y-%m-%d')
         start_time = now.strftime('%H:%M:%S')
         
-        # Append new row with apostrophe prefix to force text format
+        # Append new row without apostrophe prefix - let Google Sheets format it
         new_row = [
             employee_name,
-            "'" + date,  # Force text format
-            "'" + start_time,  # Force text format
+            date,  # Date as YYYY-MM-DD string
+            start_time,  # Time as HH:MM:SS string
             '',  # End time (empty)
             selected_activity,
             ''  # Duration (empty until stopped)
         ]
         
-        sheet.append_row(new_row)
+        # Use USER_ENTERED to let Google Sheets interpret and format the values
+        sheet.append_row(new_row, value_input_option='USER_ENTERED')
         
         update.message.reply_text(
             f"✅ *Activity Started!*\n\n"
@@ -820,6 +821,10 @@ def kitchen_handle_activity_selection(update: Update, context):
         )
         return ConversationHandler.END
 
+
+# ============================================================================
+# REPLACEMENT 2: kitchen_stop_activity function (around line 1593)
+# ============================================================================
 
 def kitchen_stop_activity(update: Update, context):
     """Stop the active activity and calculate duration"""
@@ -859,11 +864,11 @@ def kitchen_stop_activity(update: Update, context):
         end_time = now.strftime('%H:%M:%S')
         
         # Get start time and calculate duration
-        start_time_str = row_to_update[start_time_idx].replace("'", "")  # Remove apostrophe
+        start_time_str = row_to_update[start_time_idx].replace("'", "")  # Remove apostrophe if present (legacy data)
         duration = calculate_duration(start_time_str, end_time)
         
-        # Update the row with end time and duration (with apostrophe prefix)
-        sheet.update_cell(row_number, end_time_idx + 1, "'" + end_time)
+        # Update the row with end time and duration (without apostrophe prefix)
+        sheet.update_cell(row_number, end_time_idx + 1, end_time)
         sheet.update_cell(row_number, duration_idx + 1, duration)
         
         activity_name = row_to_update[activity_idx]
@@ -890,6 +895,13 @@ def kitchen_stop_activity(update: Update, context):
         return ConversationHandler.END
 
 
+# ============================================================================
+# REPLACEMENT 3: get_active_kitchen_activity function (around line 1650)
+# ============================================================================
+# NOTE: This function is CORRECT - no changes needed
+# The .replace("'", "") is still needed to handle legacy data
+# ============================================================================
+
 def get_active_kitchen_activity(employee_name):
     """Check if employee has an active activity"""
     try:
@@ -909,7 +921,7 @@ def get_active_kitchen_activity(employee_name):
         # Find most recent active activity
         for row in reversed(all_data[1:]):
             if row[name_idx] == employee_name and not row[end_time_idx]:
-                # Clean up apostrophes if present
+                # Clean up apostrophes if present (legacy data)
                 date = row[date_idx].replace("'", "")
                 start_time = row[start_time_idx].replace("'", "")
                 
