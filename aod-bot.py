@@ -703,7 +703,10 @@ def show_kitchen_activities(update: Update, context):
     """Load and show available activities for the employee"""
     try:
         employee_name = context.user_data['kitchen_employee_name']
-        employee_code = context.user_data['kitchen_employee_code']  # ← ADDED
+        employee_code = context.user_data['kitchen_employee_code']
+        
+        # Check if there's an active activity first
+        active_activity = get_active_kitchen_activity(employee_code, employee_name)
         
         # Get activities from Activity sheet
         sheet = client.open_by_key(ACTIVITY_TRACKER_SHEET_ID).worksheet(TAB_NAME_ACTIVITY)
@@ -735,13 +738,40 @@ def show_kitchen_activities(update: Update, context):
         
         # Create keyboard with activities
         keyboard = [[KeyboardButton(activity)] for activity in activities]
+        
+        # Add Finished button if there's an active activity
+        if active_activity:
+            keyboard.insert(0, [KeyboardButton("✅ Finished (Stop Current Activity)")])
+        
         keyboard.append([KeyboardButton("❌ Cancel")])
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
         
+        # Show different message based on whether there's an active activity
+        if active_activity:
+            # Calculate running duration
+            start_time = active_activity['start_time']
+            duration = calculate_running_duration(start_time)
+            
+            message = (
+                f"🟢 *Active Activity*\n\n"
+                f"Current: *{active_activity['activity']}*\n"
+                f"Started: {active_activity['date']} at {start_time}\n"
+                f"Duration: {duration}\n\n"
+                f"👨‍🍳 *Kitchen Activity Tracker*\n"
+                f"Employee: {employee_name} ({employee_code})\n\n"
+                f"📋 Select:\n"
+                f"• ✅ Finished - Stop current activity\n"
+                f"• Or select a new activity (auto-stops current)"
+            )
+        else:
+            message = (
+                f"👨‍🍳 *Kitchen Activity Tracker*\n\n"
+                f"Employee: {employee_name} ({employee_code})\n\n"
+                f"📋 Select an activity to start:"
+            )
+        
         update.message.reply_text(
-            f"👨‍🍳 *Kitchen Activity Tracker*\n\n"
-            f"Employee: {employee_name} ({employee_code})\n\n"
-            f"📋 Select an activity to start:",
+            message,
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
@@ -750,6 +780,8 @@ def show_kitchen_activities(update: Update, context):
         
     except Exception as e:
         print(f"Error in show_kitchen_activities: {e}")
+        import traceback
+        traceback.print_exc()
         update.message.reply_text(
             f"❌ Error loading activities: {str(e)}",
             reply_markup=ReplyKeyboardRemove()
@@ -792,11 +824,15 @@ def kitchen_handle_activity_selection(update: Update, context):
         employee_name = context.user_data['kitchen_employee_name']
         employee_code = context.user_data['kitchen_employee_code']
         
-        # Check if there's already an active activity
+        # Check if user clicked "Finished" button
+        if selected_activity == "✅ Finished (Stop Current Activity)":
+            return kitchen_stop_activity(update, context)
+        
+        # Get the activity backend sheet
         sheet = client.open_by_key(ACTIVITY_TRACKER_SHEET_ID).worksheet(TAB_NAME_ACTIVITY_BACKEND)
         all_data = sheet.get_all_values()
         
-        # Check for active activity (no end time)
+        # Check for active activity
         headers = all_data[0]
         
         # Try to find 'Employee Code' column first, fallback to 'Name'
@@ -809,8 +845,16 @@ def kitchen_handle_activity_selection(update: Update, context):
         
         end_time_idx = headers.index('End Time')
         activity_idx = headers.index('Activity')
+        start_time_idx = headers.index('Start Time')
+        duration_idx = headers.index('Duration')
         
-        for row in reversed(all_data[1:]):  # Start from bottom (most recent)
+        # Find active activity (no end time)
+        active_row_number = None
+        active_activity_name = None
+        
+        for i in range(len(all_data) - 1, 0, -1):  # Start from bottom (most recent)
+            row = all_data[i]
+            
             # Check by employee code first, then by name
             if use_code:
                 match = row[emp_code_idx] == employee_code
@@ -818,13 +862,31 @@ def kitchen_handle_activity_selection(update: Update, context):
                 match = row[emp_code_idx] == employee_name
             
             if match and not row[end_time_idx]:
-                update.message.reply_text(
-                    f"❌ You already have an active activity: *{row[activity_idx]}*\n"
-                    "Please stop it first before starting a new one.",
-                    parse_mode='Markdown',
-                    reply_markup=ReplyKeyboardRemove()
-                )
-                return ConversationHandler.END
+                active_row_number = i + 1  # 1-based indexing
+                active_activity_name = row[activity_idx]
+                break
+        
+        # AUTO-STOP: If there's an active activity, stop it before starting new one
+        if active_row_number:
+            print(f"🔄 Auto-stopping current activity: {active_activity_name}")
+            
+            now = datetime.datetime.now(INDIA_TZ)
+            end_time = now.strftime('%H:%M:%S')
+            
+            # Get start time and calculate duration
+            start_time_str = all_data[active_row_number - 1][start_time_idx].replace("'", "")
+            duration = calculate_duration(start_time_str, end_time)
+            
+            # Stop the previous activity using batch_update
+            from gspread.utils import rowcol_to_a1
+            end_time_cell = rowcol_to_a1(active_row_number, end_time_idx + 1)
+            duration_cell = rowcol_to_a1(active_row_number, duration_idx + 1)
+            sheet.batch_update([
+                {'range': end_time_cell, 'values': [[end_time]]},
+                {'range': duration_cell, 'values': [[duration]]}
+            ], value_input_option='USER_ENTERED')
+            
+            print(f"✅ Stopped previous activity: {active_activity_name} (Duration: {duration})")
         
         # Start new activity
         now = datetime.datetime.now(INDIA_TZ)
@@ -854,13 +916,23 @@ def kitchen_handle_activity_selection(update: Update, context):
         # ⭐ CRITICAL: Use USER_ENTERED to let Google Sheets format date/time properly
         sheet.append_row(new_row, value_input_option='USER_ENTERED')
         
+        # Build success message
+        success_message = [f"✅ *Activity Started!*\n"]
+        
+        # If we auto-stopped a previous activity, mention it
+        if active_row_number:
+            success_message.append(f"⏹️ Previous activity stopped: {active_activity_name} ({duration})\n")
+        
+        success_message.extend([
+            f"👤 Employee: {employee_name} ({employee_code})",
+            f"📋 Activity: {selected_activity}",
+            f"📅 Date: {date}",
+            f"⏰ Start Time: {start_time}\n",
+            f"Use /start and select Kitchen to stop this activity when done."
+        ])
+        
         update.message.reply_text(
-            f"✅ *Activity Started!*\n\n"
-            f"👤 Employee: {employee_name} ({employee_code})\n"
-            f"📋 Activity: {selected_activity}\n"
-            f"📅 Date: {date}\n"
-            f"⏰ Start Time: {start_time}\n\n"
-            f"Use /start and select Kitchen to stop this activity when done.",
+            "\n".join(success_message),
             parse_mode='Markdown',
             reply_markup=ReplyKeyboardRemove()
         )
