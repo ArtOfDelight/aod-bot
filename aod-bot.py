@@ -568,15 +568,19 @@ def kitchen_handle_contact(update: Update, context):
         if not phone.startswith('+'):
             phone = '+' + phone
         
+        # Normalize phone number: extract last 10 digits
+        normalized_phone = re.sub(r'\D', '', phone)[-10:]
+        print(f"Original phone: {phone}, Normalized: {normalized_phone}")
+        
         # ADMIN BYPASS: Skip all checks for phone number 8770662766 (AOD019)
-        if phone.endswith('8770662766') or phone == '8770662766' or phone == '+918770662766':
+        if normalized_phone == '8770662766':
             context.user_data['kitchen_employee_name'] = 'Admin'
-            context.user_data['kitchen_employee_code'] = 'AOD019'  # ← ADDED
+            context.user_data['kitchen_employee_code'] = 'AOD019'
             context.user_data['kitchen_phone'] = phone
             
             # Check if there's an active activity
             active_activity = get_active_kitchen_activity(
-                context.user_data['kitchen_employee_code'],  # ← CHANGED
+                context.user_data['kitchen_employee_code'],
                 context.user_data['kitchen_employee_name']
             )
             
@@ -610,18 +614,24 @@ def kitchen_handle_contact(update: Update, context):
         sheet = client.open_by_key(TICKET_SHEET_ID).worksheet(TAB_NAME_EMP_REGISTER)
         all_data = sheet.get_all_records()
         
-        # Find employee by phone number
+        # Find employee by phone number with flexible matching
         employee = None
         for row in all_data:
             emp_phone = str(row.get('Phone Number', '')).strip()
-            if not emp_phone.startswith('+'):
-                emp_phone = '+' + emp_phone
             
-            if emp_phone == phone:
+            # Normalize employee phone number (extract last 10 digits)
+            emp_phone_normalized = re.sub(r'\D', '', emp_phone)[-10:]
+            
+            print(f"Comparing: {normalized_phone} with {emp_phone_normalized} (from {emp_phone})")
+            
+            # Match by last 10 digits
+            if emp_phone_normalized == normalized_phone:
                 employee = row
+                print(f"✅ Match found: {row.get('Short Name', 'Unknown')}")
                 break
         
         if not employee:
+            print(f"❌ No employee found for phone: {phone} (normalized: {normalized_phone})")
             update.message.reply_text(
                 "❌ Phone number not found in employee register.\n"
                 "Please contact admin.",
@@ -641,12 +651,14 @@ def kitchen_handle_contact(update: Update, context):
         
         # Store employee info in context
         context.user_data['kitchen_employee_name'] = employee.get('Short Name', '')
-        context.user_data['kitchen_employee_code'] = employee.get('Employee ID', '')  # ← ADDED
+        context.user_data['kitchen_employee_code'] = employee.get('Employee ID', '')
         context.user_data['kitchen_phone'] = phone
+        
+        print(f"✅ Employee verified: {context.user_data['kitchen_employee_name']} ({context.user_data['kitchen_employee_code']})")
         
         # Check if there's an active activity
         active_activity = get_active_kitchen_activity(
-            context.user_data['kitchen_employee_code'],  # ← CHANGED
+            context.user_data['kitchen_employee_code'],
             context.user_data['kitchen_employee_name']
         )
         
@@ -678,6 +690,8 @@ def kitchen_handle_contact(update: Update, context):
         
     except Exception as e:
         print(f"Error in kitchen_handle_contact: {e}")
+        import traceback
+        traceback.print_exc()
         update.message.reply_text(
             f"❌ Error: {str(e)}",
             reply_markup=ReplyKeyboardRemove()
