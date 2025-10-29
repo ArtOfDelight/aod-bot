@@ -1056,7 +1056,7 @@ def get_active_kitchen_activity(employee_code, employee_name):
 
 
 def calculate_duration(start_time_str, end_time_str):
-    """Calculate duration between start and end time"""
+    """Calculate duration between start and end time - Returns total minutes only"""
     try:
         # Parse times
         start = datetime.datetime.strptime(start_time_str, '%H:%M:%S')
@@ -1069,20 +1069,18 @@ def calculate_duration(start_time_str, end_time_str):
         if diff.total_seconds() < 0:
             diff = diff + datetime.timedelta(days=1)
         
-        # Convert to hours and minutes
-        total_seconds = int(diff.total_seconds())
-        hours = total_seconds // 3600
-        minutes = (total_seconds % 3600) // 60
+        # Convert to total minutes only (no units)
+        total_minutes = int(diff.total_seconds() / 60)
         
-        return f"{hours}h {minutes}m"
+        return str(total_minutes)
         
     except Exception as e:
         print(f"Error calculating duration: {e}")
-        return "N/A"
+        return "0"
 
 
 def calculate_running_duration(start_time_str):
-    """Calculate running duration from start time to now"""
+    """Calculate running duration from start time to now - Returns total minutes only"""
     try:
         now = datetime.datetime.now(INDIA_TZ)
         
@@ -1093,17 +1091,14 @@ def calculate_running_duration(start_time_str):
         # Calculate difference
         diff = now - start
         
-        # Convert to hours and minutes
-        total_seconds = int(diff.total_seconds())
-        hours = total_seconds // 3600
-        minutes = (total_seconds % 3600) // 60
+        # Convert to total minutes only (no units)
+        total_minutes = int(diff.total_seconds() / 60)
         
-        return f"{minutes}"
+        return str(total_minutes)
         
     except Exception as e:
         print(f"Error calculating running duration: {e}")
-        return "N/A"
-
+        return "0"
 
 # === Sign-In Reminder Functions ===
 def get_employee_chat_id(emp_id, short_name):
