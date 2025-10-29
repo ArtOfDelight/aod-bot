@@ -926,19 +926,15 @@ def kitchen_stop_activity(update: Update, context):
         start_time_str = row_to_update[start_time_idx].replace("'", "")  # Remove apostrophe if present (legacy data)
         duration = calculate_duration(start_time_str, end_time)
         
-        # ⭐ OPTION 1: Update cells individually with USER_ENTERED
-        # This is simpler but makes 2 API calls
-        sheet.update_cell(row_number, end_time_idx + 1, end_time, value_input_option='USER_ENTERED')
-        sheet.update_cell(row_number, duration_idx + 1, duration, value_input_option='USER_ENTERED')
-        
-        # ⭐ OPTION 2 (BETTER): Batch update (only 1 API call) - UNCOMMENT TO USE
-        # from gspread.utils import rowcol_to_a1
-        # end_time_cell = rowcol_to_a1(row_number, end_time_idx + 1)
-        # duration_cell = rowcol_to_a1(row_number, duration_idx + 1)
-        # sheet.batch_update([
-        #     {'range': end_time_cell, 'values': [[end_time]]},
-        #     {'range': duration_cell, 'values': [[duration]]}
-        # ], value_input_option='USER_ENTERED')
+        # ⭐ FIXED: Use batch_update with USER_ENTERED instead of update_cell
+        # This properly formats the time values in Google Sheets
+        from gspread.utils import rowcol_to_a1
+        end_time_cell = rowcol_to_a1(row_number, end_time_idx + 1)
+        duration_cell = rowcol_to_a1(row_number, duration_idx + 1)
+        sheet.batch_update([
+            {'range': end_time_cell, 'values': [[end_time]]},
+            {'range': duration_cell, 'values': [[duration]]}
+        ], value_input_option='USER_ENTERED')
         
         activity_name = row_to_update[activity_idx]
         
