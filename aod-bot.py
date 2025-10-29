@@ -570,11 +570,15 @@ def kitchen_handle_contact(update: Update, context):
         
         # ADMIN BYPASS: Skip all checks for phone number 8770662766 (AOD019)
         if phone.endswith('8770662766') or phone == '8770662766' or phone == '+918770662766':
-            context.user_data['kitchen_employee_name'] = 'Admin'  # You can change this to your Short Name
+            context.user_data['kitchen_employee_name'] = 'Admin'
+            context.user_data['kitchen_employee_code'] = 'AOD019'  # ← ADDED
             context.user_data['kitchen_phone'] = phone
             
             # Check if there's an active activity
-            active_activity = get_active_kitchen_activity(context.user_data['kitchen_employee_name'])
+            active_activity = get_active_kitchen_activity(
+                context.user_data['kitchen_employee_code'],  # ← CHANGED
+                context.user_data['kitchen_employee_name']
+            )
             
             if active_activity:
                 # Show stop button if activity is active
@@ -637,10 +641,14 @@ def kitchen_handle_contact(update: Update, context):
         
         # Store employee info in context
         context.user_data['kitchen_employee_name'] = employee.get('Short Name', '')
+        context.user_data['kitchen_employee_code'] = employee.get('Employee ID', '')  # ← ADDED
         context.user_data['kitchen_phone'] = phone
         
         # Check if there's an active activity
-        active_activity = get_active_kitchen_activity(context.user_data['kitchen_employee_name'])
+        active_activity = get_active_kitchen_activity(
+            context.user_data['kitchen_employee_code'],  # ← CHANGED
+            context.user_data['kitchen_employee_name']
+        )
         
         if active_activity:
             # Show stop button if activity is active
@@ -681,23 +689,31 @@ def show_kitchen_activities(update: Update, context):
     """Load and show available activities for the employee"""
     try:
         employee_name = context.user_data['kitchen_employee_name']
+        employee_code = context.user_data['kitchen_employee_code']  # ← ADDED
         
         # Get activities from Activity sheet
         sheet = client.open_by_key(ACTIVITY_TRACKER_SHEET_ID).worksheet(TAB_NAME_ACTIVITY)
         all_data = sheet.get_all_records()
         
         # Find activities where employee has "Yes"
+        # Try by Employee Code first, then by Employee Name
         activities = []
         for row in all_data:
             activity_name = row.get('Activity', '').strip()
-            employee_value = str(row.get(employee_name, '')).strip().lower()
+            
+            # Try Employee Code first
+            employee_value = str(row.get(employee_code, '')).strip().lower()
+            
+            # If not found by code, try by name
+            if not employee_value:
+                employee_value = str(row.get(employee_name, '')).strip().lower()
             
             if activity_name and employee_value == 'yes':
                 activities.append(activity_name)
         
         if not activities:
             update.message.reply_text(
-                f"❌ No activities assigned to {employee_name}.\n"
+                f"❌ No activities assigned to {employee_name} ({employee_code}).\n"
                 "Please contact admin.",
                 reply_markup=ReplyKeyboardRemove()
             )
@@ -710,7 +726,7 @@ def show_kitchen_activities(update: Update, context):
         
         update.message.reply_text(
             f"👨‍🍳 *Kitchen Activity Tracker*\n\n"
-            f"Employee: {employee_name}\n\n"
+            f"Employee: {employee_name} ({employee_code})\n\n"
             f"📋 Select an activity to start:",
             parse_mode='Markdown',
             reply_markup=reply_markup
@@ -725,7 +741,6 @@ def show_kitchen_activities(update: Update, context):
             reply_markup=ReplyKeyboardRemove()
         )
         return ConversationHandler.END
-
 
 def kitchen_handle_action(update: Update, context):
     """Handle Stop button when activity is active"""
@@ -761,6 +776,7 @@ def kitchen_handle_activity_selection(update: Update, context):
     
     try:
         employee_name = context.user_data['kitchen_employee_name']
+        employee_code = context.user_data['kitchen_employee_code']  # ← ADDED
         
         # Check if there's already an active activity
         sheet = client.open_by_key(ACTIVITY_TRACKER_SHEET_ID).worksheet(TAB_NAME_ACTIVITY_BACKEND)
@@ -768,12 +784,26 @@ def kitchen_handle_activity_selection(update: Update, context):
         
         # Check for active activity (no end time)
         headers = all_data[0]
-        name_idx = headers.index('Name')
+        
+        # Try to find 'Employee Code' column first, fallback to 'Name'
+        try:
+            emp_code_idx = headers.index('Employee Code')
+            use_code = True
+        except ValueError:
+            emp_code_idx = headers.index('Name')
+            use_code = False
+        
         end_time_idx = headers.index('End Time')
         activity_idx = headers.index('Activity')
         
         for row in reversed(all_data[1:]):  # Start from bottom (most recent)
-            if row[name_idx] == employee_name and not row[end_time_idx]:
+            # Check by employee code first, then by name
+            if use_code:
+                match = row[emp_code_idx] == employee_code
+            else:
+                match = row[emp_code_idx] == employee_name
+            
+            if match and not row[end_time_idx]:
                 update.message.reply_text(
                     f"❌ You already have an active activity: *{row[activity_idx]}*\n"
                     "Please stop it first before starting a new one.",
@@ -787,22 +817,32 @@ def kitchen_handle_activity_selection(update: Update, context):
         date = now.strftime('%Y-%m-%d')
         start_time = now.strftime('%H:%M:%S')
         
-        # Append new row without apostrophe prefix - let Google Sheets format it
-        new_row = [
-            employee_name,
-            date,  # Date as YYYY-MM-DD string
-            start_time,  # Time as HH:MM:SS string
-            '',  # End time (empty)
-            selected_activity,
-            ''  # Duration (empty until stopped)
-        ]
+        # Append new row - store Employee Code if column exists
+        if use_code:
+            new_row = [
+                employee_code,  # ← CHANGED: Store Employee Code
+                date,
+                start_time,
+                '',  # End time (empty)
+                selected_activity,
+                ''  # Duration (empty until stopped)
+            ]
+        else:
+            new_row = [
+                employee_name,  # Fallback to name
+                date,
+                start_time,
+                '',
+                selected_activity,
+                ''
+            ]
         
         # Use USER_ENTERED to let Google Sheets interpret and format the values
         sheet.append_row(new_row, value_input_option='USER_ENTERED')
         
         update.message.reply_text(
             f"✅ *Activity Started!*\n\n"
-            f"👤 Employee: {employee_name}\n"
+            f"👤 Employee: {employee_name} ({employee_code})\n"
             f"📋 Activity: {selected_activity}\n"
             f"📅 Date: {date}\n"
             f"⏰ Start Time: {start_time}\n\n"
@@ -815,6 +855,8 @@ def kitchen_handle_activity_selection(update: Update, context):
         
     except Exception as e:
         print(f"Error in kitchen_handle_activity_selection: {e}")
+        import traceback
+        traceback.print_exc()
         update.message.reply_text(
             f"❌ Error starting activity: {str(e)}",
             reply_markup=ReplyKeyboardRemove()
@@ -830,12 +872,21 @@ def kitchen_stop_activity(update: Update, context):
     """Stop the active activity and calculate duration"""
     try:
         employee_name = context.user_data['kitchen_employee_name']
+        employee_code = context.user_data['kitchen_employee_code']  # ← ADDED
         
         sheet = client.open_by_key(ACTIVITY_TRACKER_SHEET_ID).worksheet(TAB_NAME_ACTIVITY_BACKEND)
         all_data = sheet.get_all_values()
         
         headers = all_data[0]
-        name_idx = headers.index('Name')
+        
+        # Try to find 'Employee Code' column first, fallback to 'Name'
+        try:
+            emp_code_idx = headers.index('Employee Code')
+            use_code = True
+        except ValueError:
+            emp_code_idx = headers.index('Name')
+            use_code = False
+        
         start_time_idx = headers.index('Start Time')
         end_time_idx = headers.index('End Time')
         activity_idx = headers.index('Activity')
@@ -847,7 +898,14 @@ def kitchen_stop_activity(update: Update, context):
         
         for i in range(len(all_data) - 1, 0, -1):  # Start from bottom
             row = all_data[i]
-            if row[name_idx] == employee_name and not row[end_time_idx]:
+            
+            # Check by employee code first, then by name
+            if use_code:
+                match = row[emp_code_idx] == employee_code
+            else:
+                match = row[emp_code_idx] == employee_name
+            
+            if match and not row[end_time_idx]:
                 row_to_update = row
                 row_number = i + 1  # +1 for 1-based indexing
                 break
@@ -875,7 +933,7 @@ def kitchen_stop_activity(update: Update, context):
         
         update.message.reply_text(
             f"✅ *Activity Stopped!*\n\n"
-            f"👤 Employee: {employee_name}\n"
+            f"👤 Employee: {employee_name} ({employee_code})\n"
             f"📋 Activity: {activity_name}\n"
             f"⏰ End Time: {end_time}\n"
             f"⏱️ Duration: {duration}\n\n"
@@ -888,6 +946,8 @@ def kitchen_stop_activity(update: Update, context):
         
     except Exception as e:
         print(f"Error in kitchen_stop_activity: {e}")
+        import traceback
+        traceback.print_exc()
         update.message.reply_text(
             f"❌ Error stopping activity: {str(e)}",
             reply_markup=ReplyKeyboardRemove()
@@ -896,14 +956,18 @@ def kitchen_stop_activity(update: Update, context):
 
 
 # ============================================================================
-# REPLACEMENT 3: get_active_kitchen_activity function (around line 1650)
-# ============================================================================
-# NOTE: This function is CORRECT - no changes needed
-# The .replace("'", "") is still needed to handle legacy data
+# REPLACEMENT 5: get_active_kitchen_activity function
 # ============================================================================
 
-def get_active_kitchen_activity(employee_name):
-    """Check if employee has an active activity"""
+def get_active_kitchen_activity(employee_code, employee_name):
+    """
+    Check if employee has an active activity
+    Tries to match by Employee Code first, then falls back to Employee Name
+    
+    Args:
+        employee_code: Employee ID/Code (e.g., 'AOD019')
+        employee_name: Employee Short Name (e.g., 'Admin')
+    """
     try:
         sheet = client.open_by_key(ACTIVITY_TRACKER_SHEET_ID).worksheet(TAB_NAME_ACTIVITY_BACKEND)
         all_data = sheet.get_all_values()
@@ -912,7 +976,17 @@ def get_active_kitchen_activity(employee_name):
             return None
         
         headers = all_data[0]
-        name_idx = headers.index('Name')
+        
+        # Try to find 'Employee Code' column first, fallback to 'Name'
+        try:
+            emp_code_idx = headers.index('Employee Code')
+            use_code = True
+            print(f"Using 'Employee Code' column for lookup")
+        except ValueError:
+            emp_code_idx = headers.index('Name')
+            use_code = False
+            print(f"Using 'Name' column for lookup (Employee Code column not found)")
+        
         date_idx = headers.index('Date')
         start_time_idx = headers.index('Start Time')
         end_time_idx = headers.index('End Time')
@@ -920,10 +994,18 @@ def get_active_kitchen_activity(employee_name):
         
         # Find most recent active activity
         for row in reversed(all_data[1:]):
-            if row[name_idx] == employee_name and not row[end_time_idx]:
+            # Check by employee code first, then by name
+            if use_code:
+                match = row[emp_code_idx] == employee_code
+            else:
+                match = row[emp_code_idx] == employee_name
+            
+            if match and not row[end_time_idx]:
                 # Clean up apostrophes if present (legacy data)
                 date = row[date_idx].replace("'", "")
                 start_time = row[start_time_idx].replace("'", "")
+                
+                print(f"Found active activity for {employee_code}/{employee_name}: {row[activity_idx]}")
                 
                 return {
                     'activity': row[activity_idx],
@@ -931,10 +1013,13 @@ def get_active_kitchen_activity(employee_name):
                     'start_time': start_time
                 }
         
+        print(f"No active activity found for {employee_code}/{employee_name}")
         return None
         
     except Exception as e:
         print(f"Error in get_active_kitchen_activity: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
