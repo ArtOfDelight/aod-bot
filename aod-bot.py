@@ -29,6 +29,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
 import requests
+from io import BytesIO
 
 MANAGER_CHAT_ID = 1225343546  # Replace with the actual Telegram chat ID
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
@@ -222,6 +223,7 @@ CHECKLIST_ASK_CONTACT, CHECKLIST_ASK_SLOT, CHECKLIST_ASK_QUESTION, CHECKLIST_ASK
 TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_SUBTYPE, TICKET_ASK_ISSUE = range(20, 24)
 ALLOWANCE_ASK_CONTACT, ALLOWANCE_ASK_TRIP_TYPE, ALLOWANCE_ASK_IMAGE = range(30, 33)
 POWER_ASK_CONTACT, POWER_ASK_STATUS = range(40, 42)
+VIEW_CHECKLIST_ASK_DATE, VIEW_CHECKLIST_ASK_OUTLET, VIEW_CHECKLIST_SHOW_DETAILS = range(200, 203)
 KITCHEN_ASK_CONTACT = 100
 KITCHEN_ASK_ACTION = 101
 KITCHEN_ASK_ACTIVITY = 102 # Added TICKET_ASK_SUBTYPE
@@ -3798,6 +3800,227 @@ def reminder_status_cmd(update: Update, context):
     
     update.message.reply_text('\n'.join(message))
 
+def view_checklist_start(update: Update, context):
+    """Start viewing checklist submissions - Ask for date"""
+    user_name = update.message.from_user.first_name
+    
+    # Get last 7 days
+    dates = []
+    now = datetime.datetime.now(INDIA_TZ)
+    for i in range(7):
+        date = (now - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+        dates.append(date)
+    
+    keyboard = [[date] for date in dates]
+    keyboard.append(["❌ Cancel"])
+    
+    update.message.reply_text(
+        f"👋 Hi {user_name}!\n\n"
+        "📅 Select a date to view checklist submissions:",
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    )
+    
+    return VIEW_CHECKLIST_ASK_DATE
+
+def view_checklist_select_date(update: Update, context):
+    """Handle date selection and show available outlets"""
+    selected_date = update.message.text.strip()
+    
+    if selected_date == "❌ Cancel":
+        update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    
+    try:
+        # Validate date format
+        datetime.datetime.strptime(selected_date, "%Y-%m-%d")
+    except:
+        update.message.reply_text("❌ Invalid date format. Please try again.")
+        return VIEW_CHECKLIST_ASK_DATE
+    
+    context.user_data["selected_date"] = selected_date
+    
+    # Fetch data from API
+    try:
+        progress_msg = update.message.reply_text("⏳ Loading checklist data...")
+        
+        response = requests.get("https://restaurant-dashboard-nqbi.onrender.com/api/checklist-data", timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Filter submissions by selected date
+        submissions = [
+            sub for sub in data.get("submissions", [])
+            if sub.get("date") == selected_date
+        ]
+        
+        if not submissions:
+            progress_msg.edit_text(
+                f"❌ No checklist submissions found for {selected_date}.\n\n"
+                "Use /viewchecklist to try another date."
+            )
+            return ConversationHandler.END
+        
+        # Group by outlet and time slot
+        outlet_groups = {}
+        for sub in submissions:
+            outlet = sub.get("outlet", "Unknown")
+            time_slot = sub.get("timeSlot", "Unknown")
+            key = f"{outlet} - {time_slot}"
+            
+            if key not in outlet_groups:
+                outlet_groups[key] = []
+            outlet_groups[key].append(sub)
+        
+        # Store for later use
+        context.user_data["submissions"] = submissions
+        context.user_data["outlet_groups"] = outlet_groups
+        
+        # Create keyboard with outlets
+        keyboard = [[outlet_key] for outlet_key in sorted(outlet_groups.keys())]
+        keyboard.append(["❌ Cancel"])
+        
+        progress_msg.edit_text(
+            f"📅 Date: {selected_date}\n"
+            f"✅ Found {len(submissions)} submission(s)\n\n"
+            "🏢 Select an outlet to view details:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        
+        return VIEW_CHECKLIST_ASK_OUTLET
+        
+    except requests.exceptions.Timeout:
+        update.message.reply_text(
+            "❌ Request timed out. The server took too long to respond.\n"
+            "Please try again later."
+        )
+        return ConversationHandler.END
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching checklist data: {e}")
+        update.message.reply_text(
+            f"❌ Error loading data: {str(e)}\n\n"
+            "Please try again later or contact admin."
+        )
+        return ConversationHandler.END
+
+def view_checklist_show_outlet(update: Update, context):
+    """Show checklist details for selected outlet"""
+    selected_outlet = update.message.text.strip()
+    
+    if selected_outlet == "❌ Cancel":
+        update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    
+    outlet_groups = context.user_data.get("outlet_groups", {})
+    
+    if selected_outlet not in outlet_groups:
+        update.message.reply_text("❌ Invalid outlet selection.")
+        return VIEW_CHECKLIST_ASK_OUTLET
+    
+    try:
+        progress_msg = update.message.reply_text("⏳ Loading checklist details...", reply_markup=ReplyKeyboardRemove())
+        
+        # Fetch full data with responses
+        response = requests.get("https://restaurant-dashboard-nqbi.onrender.com/api/checklist-data", timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        
+        submissions = outlet_groups[selected_outlet]
+        all_responses = data.get("responses", [])
+        
+        # Process each submission
+        for idx, submission in enumerate(submissions, 1):
+            submission_id = submission.get("submissionId")
+            
+            # Get responses for this submission
+            sub_responses = [
+                resp for resp in all_responses
+                if resp.get("submissionId") == submission_id
+            ]
+            
+            # Build message
+            message_parts = [
+                f"📋 **Checklist {idx}/{len(submissions)}**",
+                f"",
+                f"🆔 ID: {submission_id}",
+                f"📅 Date: {submission.get('date')}",
+                f"⏰ Time Slot: {submission.get('timeSlot')}",
+                f"🏢 Outlet: {submission.get('outlet')}",
+                f"👤 Submitted By: {submission.get('submittedBy')}",
+                f"🕐 Timestamp: {submission.get('timestamp')}",
+                f"",
+                f"━━━━━━━━━━━━━━━━━",
+                f"",
+                f"📝 **Responses** ({len(sub_responses)} questions):",
+                f""
+            ]
+            
+            # Send header message
+            update.message.reply_text(
+                "\n".join(message_parts),
+                parse_mode='Markdown'
+            )
+            
+            # Process responses
+            for q_num, resp in enumerate(sub_responses, 1):
+                question = resp.get("question", "No question")
+                answer = resp.get("answer", "No answer")
+                image_link = resp.get("image", "")
+                
+                # Send question and answer
+                resp_text = f"**Q{q_num}:** {question}\n**A:** {answer}"
+                update.message.reply_text(resp_text, parse_mode='Markdown')
+                
+                # Send image if available
+                if image_link and image_link.startswith("/api/image-proxy/"):
+                    file_id = image_link.replace("/api/image-proxy/", "")
+                    try:
+                        # Try to get image from Google Drive
+                        image_url = f"https://drive.google.com/uc?id={file_id}&export=download"
+                        
+                        # Download and send image
+                        img_response = requests.get(image_url, timeout=15)
+                        if img_response.status_code == 200:
+                            update.message.reply_photo(
+                                photo=BytesIO(img_response.content),
+                                caption=f"📸 Image for Q{q_num}"
+                            )
+                        else:
+                            update.message.reply_text(f"⚠️ Could not load image for Q{q_num}")
+                    except Exception as img_error:
+                        print(f"Error loading image {file_id}: {img_error}")
+                        update.message.reply_text(f"⚠️ Error loading image for Q{q_num}")
+                
+                # Small delay to avoid flooding
+                time.sleep(0.3)
+            
+            # Add separator between submissions
+            if idx < len(submissions):
+                update.message.reply_text("━━━━━━━━━━━━━━━━━━━━")
+        
+        progress_msg.delete()
+        update.message.reply_text(
+            f"✅ Displayed {len(submissions)} checklist submission(s).\n\n"
+            "Use /viewchecklist to view more checklists."
+        )
+        
+        return ConversationHandler.END
+        
+    except requests.exceptions.Timeout:
+        update.message.reply_text(
+            "❌ Request timed out while loading details.\n"
+            "Please try again later."
+        )
+        return ConversationHandler.END
+    except Exception as e:
+        print(f"Error showing checklist details: {e}")
+        import traceback
+        traceback.print_exc()
+        update.message.reply_text(
+            f"❌ Error displaying checklist: {str(e)}\n\n"
+            "Please try again or contact admin."
+        )
+        return ConversationHandler.END
+
 # === Dispatcher & Webhook ===
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
@@ -3816,6 +4039,8 @@ def health_check():
 
 def setup_dispatcher():
     """Setup conversation handler"""
+    
+    # Main conversation handler (Sign In/Out, Checklist, Ticket, Allowance, Power, Kitchen)
     dispatcher.add_handler(ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -3835,8 +4060,6 @@ def setup_dispatcher():
             ALLOWANCE_ASK_IMAGE: [MessageHandler(Filters.photo | Filters.text, allowance_handle_image)],
             POWER_ASK_CONTACT: [MessageHandler(Filters.contact, power_handle_contact)],
             POWER_ASK_STATUS: [MessageHandler(Filters.text & ~Filters.command, power_handle_status)],
-            
-            # ← ONLY THESE 3 LINES ARE NEW
             KITCHEN_ASK_CONTACT: [MessageHandler(Filters.contact, kitchen_handle_contact)],
             KITCHEN_ASK_ACTION: [MessageHandler(Filters.text & ~Filters.command, kitchen_handle_action)],
             KITCHEN_ASK_ACTIVITY: [MessageHandler(Filters.text & ~Filters.command, kitchen_handle_activity_selection)],
@@ -3847,6 +4070,19 @@ def setup_dispatcher():
         ]
     ))
     
+    # View Checklist conversation handler
+    dispatcher.add_handler(ConversationHandler(
+        entry_points=[CommandHandler("viewchecklist", view_checklist_start)],
+        states={
+            VIEW_CHECKLIST_ASK_DATE: [MessageHandler(Filters.text & ~Filters.command, view_checklist_select_date)],
+            VIEW_CHECKLIST_ASK_OUTLET: [MessageHandler(Filters.text & ~Filters.command, view_checklist_show_outlet)],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+        ]
+    ))
+    
+    # Standalone command handlers
     dispatcher.add_handler(CommandHandler("reset", reset))
     dispatcher.add_handler(CommandHandler("statustoday", statustoday))
     dispatcher.add_handler(CommandHandler("statusyesterday", statusyesterday))
@@ -3856,17 +4092,19 @@ def setup_dispatcher():
     dispatcher.add_handler(CommandHandler("testchecklistreminder", send_test_checklist_reminder))
     dispatcher.add_handler(CommandHandler("reminderstatus", reminder_status_cmd))
 
+    # Set bot commands menu
     try:
         bot.set_my_commands([
-            ("start", "Start the bot"),
-            ("reset", "Reset the conversation"),
-            ("statustoday", "Show today's sign-in status"),
+            ("start", "Start the bot and access main menu"),
+            ("reset", "Reset the current conversation"),
+            ("viewchecklist", "View completed checklist submissions"),
+            ("statustoday", "Show today's sign-in status report"),
             ("statusyesterday", "Show yesterday's full attendance report"),
-            ("getroster", "Show today's roster"),
+            ("getroster", "Show today's roster for all outlets"),
             ("testreminders", "Test sign-in reminder system (admin only)"),
             ("testchecklistreminders", "Test checklist reminder system (admin only)"),
             ("testchecklistreminder", "Send test checklist reminder (admin only)"),
-            ("reminderstatus", "Show reminder status (admin only)")
+            ("reminderstatus", "Show current reminder status (admin only)")
         ])
         print("Bot commands set successfully.")
     except Exception as e:
