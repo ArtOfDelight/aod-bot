@@ -3941,7 +3941,7 @@ def view_checklist_select_date(update: Update, context):
         return ConversationHandler.END
 
 def view_checklist_show_outlet(update: Update, context):
-    """Show checklist details for selected outlet"""
+    """Show checklist details for selected outlet - HYBRID VERSION WITH IMAGES"""
     user_id = update.message.from_user.id
     user_name = update.message.from_user.first_name
     selected_outlet = update.message.text.strip()
@@ -4026,56 +4026,64 @@ def view_checklist_show_outlet(update: Update, context):
                 update.message.reply_text(resp_text, parse_mode='Markdown')
                 print(f"[VIEW_CHECKLIST] Sent Q{q_num} for submission {submission_id}")
 
-                # Send image if available
+                # Send image if available - OPTIMIZED HYBRID VERSION
                 if image_link and image_link.startswith("/api/image-proxy/"):
                     file_id = image_link.replace("/api/image-proxy/", "")
                     print(f"[VIEW_CHECKLIST] Attempting to load image {file_id} for Q{q_num}")
+                    
                     try:
-                        # Try to get image from Google Drive
-                        image_url = f"https://drive.google.com/uc?id={file_id}&export=download"
-
-                        # Download with size limit check (20MB max for Telegram)
-                        img_response = requests.get(image_url, timeout=15, stream=True)
-                        if img_response.status_code == 200:
-                            # Check content length before downloading
-                            content_length = img_response.headers.get('content-length')
-                            if content_length and int(content_length) > 20 * 1024 * 1024:  # 20MB limit
-                                print(f"[VIEW_CHECKLIST] Image too large: {int(content_length)/1024/1024:.2f}MB")
-                                update.message.reply_text(f"⚠️ Image for Q{q_num} is too large (max 20MB)")
-                                img_response.close()
-                            else:
-                                # Load image in memory-efficient way
-                                image_data = BytesIO()
-                                for chunk in img_response.iter_content(chunk_size=8192):
-                                    if chunk:
-                                        image_data.write(chunk)
-                                        # Safety check while downloading
-                                        if image_data.tell() > 20 * 1024 * 1024:
-                                            print(f"[VIEW_CHECKLIST] Image exceeded size limit during download")
-                                            update.message.reply_text(f"⚠️ Image for Q{q_num} is too large")
-                                            image_data.close()
-                                            img_response.close()
-                                            break
-                                else:
-                                    # Successfully downloaded
-                                    image_data.seek(0)
-                                    update.message.reply_photo(
-                                        photo=image_data,
-                                        caption=f"📸 Image for Q{q_num}"
-                                    )
-                                    image_data.close()
-                                    print(f"[VIEW_CHECKLIST] Successfully sent image for Q{q_num}")
+                        # METHOD 1: Try sending direct Google Drive URL (Telegram can preview it)
+                        image_url = f"https://drive.google.com/uc?export=view&id={file_id}"
+                        
+                        # Quick HEAD request to check if image is accessible and size
+                        head_response = requests.head(image_url, timeout=5, allow_redirects=True)
+                        content_length = head_response.headers.get('content-length')
+                        
+                        # Check if image is small enough (under 10MB for faster loading)
+                        if content_length and int(content_length) < 10 * 1024 * 1024:
+                            print(f"[VIEW_CHECKLIST] Image size: {int(content_length)/1024/1024:.2f}MB - attempting direct send")
+                            
+                            # METHOD 2: Send the URL directly - Telegram will handle the preview
+                            update.message.reply_photo(
+                                photo=image_url,
+                                caption=f"📸 Image for Q{q_num}"
+                            )
+                            print(f"[VIEW_CHECKLIST] Successfully sent image URL for Q{q_num}")
                         else:
-                            print(f"[VIEW_CHECKLIST] Image download failed with status {img_response.status_code}")
-                            update.message.reply_text(f"⚠️ Could not load image for Q{q_num}")
+                            # Image too large, send link instead
+                            size_mb = int(content_length)/1024/1024 if content_length else 0
+                            print(f"[VIEW_CHECKLIST] Image too large ({size_mb:.2f}MB) - sending link instead")
+                            
+                            drive_view_url = f"https://drive.google.com/file/d/{file_id}/view"
+                            update.message.reply_text(
+                                f"📸 **Image for Q{q_num}** (Large file - {size_mb:.1f}MB)\n\n"
+                                f"[Click here to view full image]({drive_view_url})",
+                                parse_mode='Markdown',
+                                disable_web_page_preview=False
+                            )
+                            
                     except requests.exceptions.Timeout:
-                        print(f"[VIEW_CHECKLIST] Image download timeout for {file_id}")
-                        update.message.reply_text(f"⚠️ Image download timed out for Q{q_num}")
+                        print(f"[VIEW_CHECKLIST] Timeout checking image - sending link")
+                        drive_view_url = f"https://drive.google.com/file/d/{file_id}/view"
+                        update.message.reply_text(
+                            f"📸 **Image for Q{q_num}**\n\n"
+                            f"[Click here to view image]({drive_view_url})",
+                            parse_mode='Markdown',
+                            disable_web_page_preview=False
+                        )
+                        
                     except Exception as img_error:
                         print(f"[VIEW_CHECKLIST] ERROR loading image {file_id}: {img_error}")
-                        update.message.reply_text(f"⚠️ Error loading image for Q{q_num}")
+                        # Fallback: Send link
+                        drive_view_url = f"https://drive.google.com/file/d/{file_id}/view"
+                        update.message.reply_text(
+                            f"📸 **Image for Q{q_num}**\n\n"
+                            f"[Click here to view image]({drive_view_url})",
+                            parse_mode='Markdown',
+                            disable_web_page_preview=False
+                        )
                 
-                # Small delay to avoid flooding
+                # Small delay to avoid rate limiting
                 time.sleep(0.3)
             
             # Add separator between submissions
