@@ -3520,10 +3520,15 @@ def allowance_handle_image(update: Update, context):
     
     try:
         processing_msg = update.message.reply_text("⏳ Processing image...")
-        
+
         photo = update.message.photo[-1]
         print(f"Photo file_id: {photo.file_id}, file_size: {photo.file_size}")
-        
+
+        # Check file size before downloading (10MB limit)
+        if photo.file_size > 10 * 1024 * 1024:
+            update.message.reply_text("❌ Image too large (max 10MB allowed).")
+            return ALLOWANCE_ASK_IMAGE
+
         file = photo.get_file()
         image_bytes = file.download_as_bytearray()
         
@@ -4029,17 +4034,43 @@ def view_checklist_show_outlet(update: Update, context):
                         # Try to get image from Google Drive
                         image_url = f"https://drive.google.com/uc?id={file_id}&export=download"
 
-                        # Download and send image
-                        img_response = requests.get(image_url, timeout=15)
+                        # Download with size limit check (20MB max for Telegram)
+                        img_response = requests.get(image_url, timeout=15, stream=True)
                         if img_response.status_code == 200:
-                            update.message.reply_photo(
-                                photo=BytesIO(img_response.content),
-                                caption=f"📸 Image for Q{q_num}"
-                            )
-                            print(f"[VIEW_CHECKLIST] Successfully sent image for Q{q_num}")
+                            # Check content length before downloading
+                            content_length = img_response.headers.get('content-length')
+                            if content_length and int(content_length) > 20 * 1024 * 1024:  # 20MB limit
+                                print(f"[VIEW_CHECKLIST] Image too large: {int(content_length)/1024/1024:.2f}MB")
+                                update.message.reply_text(f"⚠️ Image for Q{q_num} is too large (max 20MB)")
+                                img_response.close()
+                            else:
+                                # Load image in memory-efficient way
+                                image_data = BytesIO()
+                                for chunk in img_response.iter_content(chunk_size=8192):
+                                    if chunk:
+                                        image_data.write(chunk)
+                                        # Safety check while downloading
+                                        if image_data.tell() > 20 * 1024 * 1024:
+                                            print(f"[VIEW_CHECKLIST] Image exceeded size limit during download")
+                                            update.message.reply_text(f"⚠️ Image for Q{q_num} is too large")
+                                            image_data.close()
+                                            img_response.close()
+                                            break
+                                else:
+                                    # Successfully downloaded
+                                    image_data.seek(0)
+                                    update.message.reply_photo(
+                                        photo=image_data,
+                                        caption=f"📸 Image for Q{q_num}"
+                                    )
+                                    image_data.close()
+                                    print(f"[VIEW_CHECKLIST] Successfully sent image for Q{q_num}")
                         else:
                             print(f"[VIEW_CHECKLIST] Image download failed with status {img_response.status_code}")
                             update.message.reply_text(f"⚠️ Could not load image for Q{q_num}")
+                    except requests.exceptions.Timeout:
+                        print(f"[VIEW_CHECKLIST] Image download timeout for {file_id}")
+                        update.message.reply_text(f"⚠️ Image download timed out for Q{q_num}")
                     except Exception as img_error:
                         print(f"[VIEW_CHECKLIST] ERROR loading image {file_id}: {img_error}")
                         update.message.reply_text(f"⚠️ Error loading image for Q{q_num}")
@@ -4083,11 +4114,23 @@ def view_checklist_show_outlet(update: Update, context):
 def webhook():
     try:
         update = Update.de_json(request.get_json(force=True), bot)
-        print(f"Received update: {update}")
+        # Log only essential info to avoid memory issues with large binary data
+        update_type = "unknown"
+        if update.message:
+            update_type = "message"
+            if update.message.photo:
+                update_type = "photo"
+            elif update.message.document:
+                update_type = "document"
+        elif update.callback_query:
+            update_type = "callback_query"
+        print(f"Received update type: {update_type}, update_id: {update.update_id}")
         dispatcher.process_update(update)
         return "OK"
     except Exception as e:
         print(f"Error processing webhook: {e}")
+        import traceback
+        traceback.print_exc()
         return "Error", 500
 
 @app.route("/", methods=["GET"])
