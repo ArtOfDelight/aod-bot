@@ -3908,7 +3908,9 @@ def view_checklist_select_date(update: Update, context):
         keyboard = [[outlet_key] for outlet_key in sorted(outlet_groups.keys())]
         keyboard.append(["❌ Cancel"])
 
-        progress_msg.edit_text(
+        # Delete the progress message and send a new one with the keyboard
+        progress_msg.delete()
+        update.message.reply_text(
             f"📅 Date: {selected_date}\n"
             f"✅ Found {len(submissions)} submission(s)\n\n"
             "🏢 Select an outlet to view details:",
