@@ -3802,100 +3802,131 @@ def reminder_status_cmd(update: Update, context):
 
 def view_checklist_start(update: Update, context):
     """Start viewing checklist submissions - Ask for date"""
+    user_id = update.message.from_user.id
     user_name = update.message.from_user.first_name
-    
+
+    print(f"[VIEW_CHECKLIST] Command initiated by user {user_name} (ID: {user_id})")
+    print(f"[VIEW_CHECKLIST] Timestamp: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d %H:%M:%S')}")
+
     # Get last 7 days
     dates = []
     now = datetime.datetime.now(INDIA_TZ)
     for i in range(7):
         date = (now - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
         dates.append(date)
-    
+
+    print(f"[VIEW_CHECKLIST] Generated {len(dates)} date options for selection")
+
     keyboard = [[date] for date in dates]
     keyboard.append(["❌ Cancel"])
-    
+
     update.message.reply_text(
         f"👋 Hi {user_name}!\n\n"
         "📅 Select a date to view checklist submissions:",
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
-    
+
+    print(f"[VIEW_CHECKLIST] Date selection prompt sent to user {user_name}")
+
     return VIEW_CHECKLIST_ASK_DATE
 
 def view_checklist_select_date(update: Update, context):
     """Handle date selection and show available outlets"""
+    user_id = update.message.from_user.id
+    user_name = update.message.from_user.first_name
     selected_date = update.message.text.strip()
-    
+
+    print(f"[VIEW_CHECKLIST] User {user_name} (ID: {user_id}) entered date selection handler")
+    print(f"[VIEW_CHECKLIST] Selected date: '{selected_date}'")
+
     if selected_date == "❌ Cancel":
+        print(f"[VIEW_CHECKLIST] User {user_name} cancelled the operation")
         update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-    
+
     try:
         # Validate date format
         datetime.datetime.strptime(selected_date, "%Y-%m-%d")
+        print(f"[VIEW_CHECKLIST] Date validation successful for: {selected_date}")
     except:
+        print(f"[VIEW_CHECKLIST] Invalid date format entered: {selected_date}")
         update.message.reply_text("❌ Invalid date format. Please try again.")
         return VIEW_CHECKLIST_ASK_DATE
-    
+
     context.user_data["selected_date"] = selected_date
+    print(f"[VIEW_CHECKLIST] Date {selected_date} saved to user context")
     
     # Fetch data from API
     try:
         progress_msg = update.message.reply_text("⏳ Loading checklist data...")
-        
+        print(f"[VIEW_CHECKLIST] Fetching data from API for date: {selected_date}")
+
         response = requests.get("https://restaurant-dashboard-nqbi.onrender.com/api/checklist-data", timeout=30)
         response.raise_for_status()
+        print(f"[VIEW_CHECKLIST] API response status: {response.status_code}")
+
         data = response.json()
-        
+        total_submissions = len(data.get("submissions", []))
+        print(f"[VIEW_CHECKLIST] Total submissions in database: {total_submissions}")
+
         # Filter submissions by selected date
         submissions = [
             sub for sub in data.get("submissions", [])
             if sub.get("date") == selected_date
         ]
-        
+        print(f"[VIEW_CHECKLIST] Filtered submissions for {selected_date}: {len(submissions)}")
+
         if not submissions:
+            print(f"[VIEW_CHECKLIST] No submissions found for date {selected_date}")
             progress_msg.edit_text(
                 f"❌ No checklist submissions found for {selected_date}.\n\n"
                 "Use /viewchecklist to try another date."
             )
             return ConversationHandler.END
-        
+
         # Group by outlet and time slot
         outlet_groups = {}
         for sub in submissions:
             outlet = sub.get("outlet", "Unknown")
             time_slot = sub.get("timeSlot", "Unknown")
             key = f"{outlet} - {time_slot}"
-            
+
             if key not in outlet_groups:
                 outlet_groups[key] = []
             outlet_groups[key].append(sub)
-        
+
+        print(f"[VIEW_CHECKLIST] Grouped into {len(outlet_groups)} outlet/time slot combinations:")
+        for key in outlet_groups:
+            print(f"[VIEW_CHECKLIST]   - {key}: {len(outlet_groups[key])} submission(s)")
+
         # Store for later use
         context.user_data["submissions"] = submissions
         context.user_data["outlet_groups"] = outlet_groups
-        
+        print(f"[VIEW_CHECKLIST] Data stored in user context")
+
         # Create keyboard with outlets
         keyboard = [[outlet_key] for outlet_key in sorted(outlet_groups.keys())]
         keyboard.append(["❌ Cancel"])
-        
+
         progress_msg.edit_text(
             f"📅 Date: {selected_date}\n"
             f"✅ Found {len(submissions)} submission(s)\n\n"
             "🏢 Select an outlet to view details:",
             reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
         )
-        
+        print(f"[VIEW_CHECKLIST] Outlet selection prompt sent to user {user_name}")
+
         return VIEW_CHECKLIST_ASK_OUTLET
-        
+
     except requests.exceptions.Timeout:
+        print(f"[VIEW_CHECKLIST] ERROR: Request timed out for user {user_name}")
         update.message.reply_text(
             "❌ Request timed out. The server took too long to respond.\n"
             "Please try again later."
         )
         return ConversationHandler.END
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching checklist data: {e}")
+        print(f"[VIEW_CHECKLIST] ERROR: Request exception - {e}")
         update.message.reply_text(
             f"❌ Error loading data: {str(e)}\n\n"
             "Please try again later or contact admin."
@@ -3904,39 +3935,55 @@ def view_checklist_select_date(update: Update, context):
 
 def view_checklist_show_outlet(update: Update, context):
     """Show checklist details for selected outlet"""
+    user_id = update.message.from_user.id
+    user_name = update.message.from_user.first_name
     selected_outlet = update.message.text.strip()
-    
+
+    print(f"[VIEW_CHECKLIST] User {user_name} (ID: {user_id}) entered outlet selection handler")
+    print(f"[VIEW_CHECKLIST] Selected outlet: '{selected_outlet}'")
+
     if selected_outlet == "❌ Cancel":
+        print(f"[VIEW_CHECKLIST] User {user_name} cancelled the operation")
         update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-    
+
     outlet_groups = context.user_data.get("outlet_groups", {})
-    
+    print(f"[VIEW_CHECKLIST] Available outlet groups: {list(outlet_groups.keys())}")
+
     if selected_outlet not in outlet_groups:
+        print(f"[VIEW_CHECKLIST] ERROR: Invalid outlet selection '{selected_outlet}'")
         update.message.reply_text("❌ Invalid outlet selection.")
         return VIEW_CHECKLIST_ASK_OUTLET
-    
+
+    print(f"[VIEW_CHECKLIST] Valid outlet selected, proceeding to load details")
+
     try:
         progress_msg = update.message.reply_text("⏳ Loading checklist details...", reply_markup=ReplyKeyboardRemove())
-        
+        print(f"[VIEW_CHECKLIST] Fetching full data with responses from API")
+
         # Fetch full data with responses
         response = requests.get("https://restaurant-dashboard-nqbi.onrender.com/api/checklist-data", timeout=30)
         response.raise_for_status()
+        print(f"[VIEW_CHECKLIST] API response status: {response.status_code}")
         data = response.json()
         
         submissions = outlet_groups[selected_outlet]
         all_responses = data.get("responses", [])
-        
+        print(f"[VIEW_CHECKLIST] Processing {len(submissions)} submission(s) for outlet '{selected_outlet}'")
+        print(f"[VIEW_CHECKLIST] Total responses in database: {len(all_responses)}")
+
         # Process each submission
         for idx, submission in enumerate(submissions, 1):
             submission_id = submission.get("submissionId")
-            
+            print(f"[VIEW_CHECKLIST] Processing submission {idx}/{len(submissions)} - ID: {submission_id}")
+
             # Get responses for this submission
             sub_responses = [
                 resp for resp in all_responses
                 if resp.get("submissionId") == submission_id
             ]
-            
+            print(f"[VIEW_CHECKLIST] Found {len(sub_responses)} response(s) for submission {submission_id}")
+
             # Build message
             message_parts = [
                 f"📋 **Checklist {idx}/{len(submissions)}**",
@@ -3953,30 +4000,33 @@ def view_checklist_show_outlet(update: Update, context):
                 f"📝 **Responses** ({len(sub_responses)} questions):",
                 f""
             ]
-            
+
             # Send header message
             update.message.reply_text(
                 "\n".join(message_parts),
                 parse_mode='Markdown'
             )
-            
+            print(f"[VIEW_CHECKLIST] Sent header message for submission {submission_id}")
+
             # Process responses
             for q_num, resp in enumerate(sub_responses, 1):
                 question = resp.get("question", "No question")
                 answer = resp.get("answer", "No answer")
                 image_link = resp.get("image", "")
-                
+
                 # Send question and answer
                 resp_text = f"**Q{q_num}:** {question}\n**A:** {answer}"
                 update.message.reply_text(resp_text, parse_mode='Markdown')
-                
+                print(f"[VIEW_CHECKLIST] Sent Q{q_num} for submission {submission_id}")
+
                 # Send image if available
                 if image_link and image_link.startswith("/api/image-proxy/"):
                     file_id = image_link.replace("/api/image-proxy/", "")
+                    print(f"[VIEW_CHECKLIST] Attempting to load image {file_id} for Q{q_num}")
                     try:
                         # Try to get image from Google Drive
                         image_url = f"https://drive.google.com/uc?id={file_id}&export=download"
-                        
+
                         # Download and send image
                         img_response = requests.get(image_url, timeout=15)
                         if img_response.status_code == 200:
@@ -3984,10 +4034,12 @@ def view_checklist_show_outlet(update: Update, context):
                                 photo=BytesIO(img_response.content),
                                 caption=f"📸 Image for Q{q_num}"
                             )
+                            print(f"[VIEW_CHECKLIST] Successfully sent image for Q{q_num}")
                         else:
+                            print(f"[VIEW_CHECKLIST] Image download failed with status {img_response.status_code}")
                             update.message.reply_text(f"⚠️ Could not load image for Q{q_num}")
                     except Exception as img_error:
-                        print(f"Error loading image {file_id}: {img_error}")
+                        print(f"[VIEW_CHECKLIST] ERROR loading image {file_id}: {img_error}")
                         update.message.reply_text(f"⚠️ Error loading image for Q{q_num}")
                 
                 # Small delay to avoid flooding
@@ -3996,23 +4048,26 @@ def view_checklist_show_outlet(update: Update, context):
             # Add separator between submissions
             if idx < len(submissions):
                 update.message.reply_text("━━━━━━━━━━━━━━━━━━━━")
-        
+
         progress_msg.delete()
+        print(f"[VIEW_CHECKLIST] Successfully displayed all {len(submissions)} submission(s)")
         update.message.reply_text(
             f"✅ Displayed {len(submissions)} checklist submission(s).\n\n"
             "Use /viewchecklist to view more checklists."
         )
-        
+        print(f"[VIEW_CHECKLIST] View checklist operation completed for user {user_name}")
+
         return ConversationHandler.END
-        
+
     except requests.exceptions.Timeout:
+        print(f"[VIEW_CHECKLIST] ERROR: Request timed out while loading details for user {user_name}")
         update.message.reply_text(
             "❌ Request timed out while loading details.\n"
             "Please try again later."
         )
         return ConversationHandler.END
     except Exception as e:
-        print(f"Error showing checklist details: {e}")
+        print(f"[VIEW_CHECKLIST] ERROR showing checklist details: {e}")
         import traceback
         traceback.print_exc()
         update.message.reply_text(
