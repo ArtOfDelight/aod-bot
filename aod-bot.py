@@ -2355,8 +2355,15 @@ def checklist_status_handle_date(update: Update, context):
 
         # Telegram has a 4096 character limit, so split if needed
         if len(full_message) > 4000:
+            # Delete the progress message first
+            try:
+                progress_msg.delete()
+            except:
+                pass
+
             # Split by outlet
             current_msg = ["```", f"📋 *Checklist Status - {selected_date}*", ""]
+            message_sent = False
 
             for outlet in outlets:
                 outlet_name = outlet.get("outletName", "Unknown")
@@ -2370,7 +2377,8 @@ def checklist_status_handle_date(update: Update, context):
                 # If adding this outlet would exceed limit, send current message
                 if len("\n".join(current_msg)) + len(outlet_info) > 3900:
                     current_msg.append("```")
-                    progress_msg.edit_text("\n".join(current_msg), parse_mode="Markdown")
+                    update.message.reply_text("\n".join(current_msg), parse_mode="Markdown")
+                    message_sent = True
                     # Start new message
                     current_msg = ["```"]
 
