@@ -2181,6 +2181,121 @@ def getroster(update: Update, context):
         update.message.reply_text(f"Error generating roster: {e}")
         print(f"Error sending roster: {e}")
 
+def checklist_completion_status(update: Update, context):
+    """Show checklist completion status for all outlets"""
+    try:
+        # Send loading message
+        progress_msg = update.message.reply_text("⏳ Fetching checklist completion status...")
+
+        # Fetch data from API
+        response = requests.get("https://restaurant-dashboard-nqbi.onrender.com/api/checklist-completion-status", timeout=30)
+        response.raise_for_status()
+
+        data = response.json()
+
+        if not data.get("success"):
+            update.message.reply_text("❌ Failed to fetch checklist status data.")
+            return
+
+        outlets = data.get("data", [])
+
+        if not outlets:
+            update.message.reply_text("📋 No checklist data available.")
+            return
+
+        # Format the message
+        message_parts = ["```"]
+        message_parts.append("📋 *Checklist Completion Status*")
+        message_parts.append("")
+
+        for outlet in outlets:
+            outlet_name = outlet.get("outletName", "Unknown")
+            outlet_code = outlet.get("outletCode", "N/A")
+            overall_status = outlet.get("overallStatus", "Unknown")
+            completion_pct = outlet.get("completionPercentage", 0)
+            total_employees = outlet.get("totalScheduledEmployees", 0)
+            last_submission = outlet.get("lastSubmissionTime", "")
+
+            # Status emoji
+            status_emoji = "✅" if overall_status == "Completed" else "🟡" if overall_status == "Partial" else "❌"
+
+            message_parts.append(f"{status_emoji} *{outlet_name} ({outlet_code})*")
+            message_parts.append(f"Overall: {overall_status} ({completion_pct}%)")
+            message_parts.append(f"Scheduled Employees: {total_employees}")
+
+            # Time slot details
+            time_slots = outlet.get("timeSlotStatus", [])
+            if time_slots:
+                message_parts.append("Time Slots:")
+                for slot in time_slots:
+                    slot_name = slot.get("timeSlot", "Unknown")
+                    slot_status = slot.get("status", "Unknown")
+                    employee_count = slot.get("employeeCount", 0)
+                    slot_emoji = "✅" if slot_status == "Completed" else "❌"
+
+                    slot_line = f"  {slot_emoji} {slot_name}: {slot_status}"
+                    if slot_status == "Completed":
+                        submitted_by = slot.get("submittedBy", "Unknown")
+                        timestamp = slot.get("timestamp", "")
+                        slot_line += f"\n     By: {submitted_by}"
+                        if timestamp:
+                            slot_line += f"\n     At: {timestamp}"
+                    slot_line += f"\n     Employees: {employee_count}"
+                    message_parts.append(slot_line)
+
+            if last_submission:
+                message_parts.append(f"Last Submission: {last_submission}")
+
+            message_parts.append("")
+
+        # Remove last empty line
+        if message_parts[-1] == "":
+            message_parts.pop()
+
+        message_parts.append("```")
+
+        # Send the formatted message
+        full_message = "\n".join(message_parts)
+
+        # Telegram has a 4096 character limit, so split if needed
+        if len(full_message) > 4000:
+            # Split by outlet
+            current_msg = ["```", "📋 *Checklist Completion Status*", ""]
+
+            for outlet in outlets:
+                outlet_name = outlet.get("outletName", "Unknown")
+                outlet_code = outlet.get("outletCode", "N/A")
+                overall_status = outlet.get("overallStatus", "Unknown")
+                completion_pct = outlet.get("completionPercentage", 0)
+                status_emoji = "✅" if overall_status == "Completed" else "🟡" if overall_status == "Partial" else "❌"
+
+                outlet_info = f"{status_emoji} *{outlet_name} ({outlet_code})*: {overall_status} ({completion_pct}%)"
+
+                # If adding this outlet would exceed limit, send current message
+                if len("\n".join(current_msg)) + len(outlet_info) > 3900:
+                    current_msg.append("```")
+                    progress_msg.edit_text("\n".join(current_msg), parse_mode="Markdown")
+                    # Start new message
+                    current_msg = ["```"]
+
+                current_msg.append(outlet_info)
+
+            current_msg.append("```")
+            update.message.reply_text("\n".join(current_msg), parse_mode="Markdown")
+        else:
+            progress_msg.edit_text(full_message, parse_mode="Markdown")
+
+        print(f"Checklist completion status sent successfully")
+
+    except requests.exceptions.RequestException as e:
+        update.message.reply_text(f"❌ Network error: Could not fetch data from server.\n{str(e)}")
+        print(f"Error fetching checklist completion status: {e}")
+    except Exception as e:
+        update.message.reply_text(f"❌ Error generating checklist status: {e}")
+        print(f"Error sending checklist status: {e}")
+        import traceback
+        traceback.print_exc()
+
 def get_phone_to_empid_map():
     creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
     sheet = gspread.authorize(creds).open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
@@ -4199,6 +4314,7 @@ def setup_dispatcher():
     dispatcher.add_handler(CommandHandler("testchecklistreminders", test_checklist_reminders))
     dispatcher.add_handler(CommandHandler("testchecklistreminder", send_test_checklist_reminder))
     dispatcher.add_handler(CommandHandler("reminderstatus", reminder_status_cmd))
+    dispatcher.add_handler(CommandHandler("checkliststatus", checklist_completion_status))
 
     # Set bot commands menu
     try:
@@ -4206,6 +4322,7 @@ def setup_dispatcher():
             ("start", "Start the bot and access main menu"),
             ("reset", "Reset the current conversation"),
             ("viewchecklist", "View completed checklist submissions"),
+            ("checkliststatus", "Show checklist completion status for all outlets"),
             ("statustoday", "Show today's sign-in status report"),
             ("statusyesterday", "Show yesterday's full attendance report"),
             ("getroster", "Show today's roster for all outlets"),
