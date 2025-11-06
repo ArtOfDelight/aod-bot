@@ -4294,185 +4294,123 @@ def view_checklist_select_date(update: Update, context):
         return ConversationHandler.END
 
 def view_checklist_show_outlet(update: Update, context):
-    """Show checklist details - STREAMING VERSION (processes all data efficiently)"""
-    user_id = update.message.from_user.id
-    user_name = update.message.from_user.first_name
+    """ABSOLUTE MINIMUM MEMORY VERSION - No storage, immediate processing"""
     selected_outlet = update.message.text.strip()
-
-    print(f"[VIEW_CHECKLIST] User {user_name} selected outlet: '{selected_outlet}'")
 
     if selected_outlet == "❌ Cancel":
         update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
     outlet_groups = context.user_data.get("outlet_groups", {})
-
     if selected_outlet not in outlet_groups:
         update.message.reply_text("❌ Invalid outlet selection.")
         return VIEW_CHECKLIST_ASK_OUTLET
 
     try:
-        progress_msg = update.message.reply_text("⏳ Loading checklist details...", reply_markup=ReplyKeyboardRemove())
+        progress_msg = update.message.reply_text("⏳ Loading...", reply_markup=ReplyKeyboardRemove())
         
         submissions = outlet_groups[selected_outlet]
-        total_submissions = len(submissions)
-        print(f"[VIEW_CHECKLIST] Processing ALL {total_submissions} submission(s)")
-
+        total = len(submissions)
+        
         # ============================================
-        # MEMORY-EFFICIENT: Process in batches
-        # Fetch and process data in chunks, then clear memory
+        # CRITICAL: Process ONE submission at a time
+        # NO data storage, immediate send and delete
         # ============================================
         
-        BATCH_SIZE = 5  # Process 5 submissions at a time
-        
-        for batch_start in range(0, total_submissions, BATCH_SIZE):
-            batch_end = min(batch_start + BATCH_SIZE, total_submissions)
-            batch_submissions = submissions[batch_start:batch_end]
+        for idx, sub in enumerate(submissions, 1):
+            sub_id = sub.get("submissionId")
             
-            print(f"[VIEW_CHECKLIST] Processing batch {batch_start//BATCH_SIZE + 1}: submissions {batch_start+1}-{batch_end}")
+            # Update progress every 5 submissions
+            if idx % 5 == 0:
+                try:
+                    progress_msg.edit_text(f"⏳ {idx}/{total}...")
+                except:
+                    pass
             
-            # Update progress
+            # Fetch ONLY responses for this ONE submission
             try:
-                progress_msg.edit_text(
-                    f"⏳ Loading submissions {batch_start+1}-{batch_end} of {total_submissions}..."
-                )
-            except:
-                pass
-            
-            # Fetch responses for this batch only
-            try:
-                response = requests.get(
+                r = requests.get(
                     "https://restaurant-dashboard-nqbi.onrender.com/api/checklist-data",
-                    timeout=30
+                    timeout=20
                 )
-                response.raise_for_status()
-                data = response.json()
-                all_responses = data.get("responses", [])
+                r.raise_for_status()
+                d = r.json()
                 
-                # Immediately clear response object
-                del response
-                del data
+                # Filter immediately, don't store full response
+                resp_list = [x for x in d.get("responses", []) if x.get("submissionId") == sub_id]
                 
-            except Exception as fetch_error:
-                print(f"[VIEW_CHECKLIST] ERROR fetching batch: {fetch_error}")
-                update.message.reply_text(f"⚠️ Error loading batch {batch_start//BATCH_SIZE + 1}")
+                # Clear immediately
+                del r
+                del d
+                
+            except Exception as e:
+                print(f"[VIEW] Error: {e}")
                 continue
-
-            # Process each submission in this batch
-            for submission in batch_submissions:
-                idx = submissions.index(submission) + 1
-                submission_id = submission.get("submissionId")
-                print(f"[VIEW_CHECKLIST] Processing {idx}/{total_submissions} - ID: {submission_id}")
-
-                # Filter responses for THIS submission only
-                sub_responses = [r for r in all_responses if r.get("submissionId") == submission_id]
-                
-                if not sub_responses:
-                    print(f"[VIEW_CHECKLIST] No responses found for {submission_id}")
-                    continue
-
-                # Build and send header (keep it simple to save memory)
-                header = (
-                    f"📋 **Checklist {idx}/{total_submissions}**\n\n"
-                    f"🆔 {submission_id}\n"
-                    f"📅 {submission.get('date')}\n"
-                    f"⏰ {submission.get('timeSlot')}\n"
-                    f"🏢 {submission.get('outlet')}\n"
-                    f"👤 {submission.get('submittedBy')}\n"
-                    f"🕐 {submission.get('timestamp')}\n\n"
-                    f"━━━━━━━━━━━━━━━━━\n\n"
-                    f"📝 **Responses ({len(sub_responses)}):**\n"
-                )
-                update.message.reply_text(header, parse_mode='Markdown')
-
-                # Process responses - ONE AT A TIME to minimize memory
-                for q_num, resp in enumerate(sub_responses, 1):
-                    question = resp.get("question", "No question")
-                    answer = resp.get("answer", "No answer")
-                    image_link = resp.get("image", "")
-
-                    # Send Q&A
-                    qa_text = f"**Q{q_num}:** {question}\n**A:** {answer}"
-                    update.message.reply_text(qa_text, parse_mode='Markdown')
-
-                    # Send image - CRITICAL: Direct URL only, no downloads
-                    if image_link and "/api/image-proxy/" in image_link:
-                        file_id = image_link.split("/")[-1]
-                        
-                        try:
-                            # Direct Google Drive URL - Telegram downloads it, not us
-                            img_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-                            update.message.reply_photo(
-                                photo=img_url,
-                                caption=f"📸 Image for Q{q_num}",
-                                timeout=25
-                            )
-                            print(f"[VIEW_CHECKLIST] ✓ Sent image Q{q_num}")
-                        except Exception as img_err:
-                            print(f"[VIEW_CHECKLIST] Image failed: {img_err}")
-                            # Fallback: Try alternative URL
-                            try:
-                                alt_url = f"https://drive.google.com/uc?export=view&id={file_id}"
-                                update.message.reply_photo(photo=alt_url, caption=f"📸 Q{q_num}", timeout=25)
-                            except:
-                                print(f"[VIEW_CHECKLIST] Alt URL also failed, skipping image")
-                    
-                    # Small delay for rate limiting
-                    time.sleep(0.1)
-                    
-                    # Clear response object from memory
-                    del resp
-                
-                # Clear sub_responses after processing this submission
-                del sub_responses
-                
-                # Separator between submissions
-                if idx < total_submissions:
-                    update.message.reply_text("━━━━━━━━━━━━━━━━━━━━")
-                
-                # Force garbage collection after each submission
-                import gc
-                gc.collect()
             
-            # Clear all_responses after processing this batch
-            del all_responses
-            del batch_submissions
+            if not resp_list:
+                continue
             
-            # Aggressive garbage collection after each batch
+            # Send header (minimal text)
+            update.message.reply_text(
+                f"📋 {idx}/{total}\n"
+                f"🆔 {sub_id}\n"
+                f"📅 {sub.get('date')}\n"
+                f"⏰ {sub.get('timeSlot')}\n"
+                f"🏢 {sub.get('outlet')}\n"
+                f"👤 {sub.get('submittedBy')}\n\n"
+                f"━━━━━━━━━━━━━━━━━",
+                parse_mode='Markdown'
+            )
+            
+            # Process each response immediately
+            for q_num, rsp in enumerate(resp_list, 1):
+                q = rsp.get("question", "")[:150]  # Truncate
+                a = rsp.get("answer", "")[:50]      # Truncate
+                img = rsp.get("image", "")
+                
+                # Send Q&A
+                update.message.reply_text(f"Q{q_num}: {q}\nA: {a}")
+                
+                # Send image (direct URL only)
+                if img and "/api/image-proxy/" in img:
+                    fid = img.split("/")[-1]
+                    try:
+                        update.message.reply_photo(
+                            photo=f"https://drive.google.com/uc?export=download&id={fid}",
+                            caption=f"📸 Q{q_num}",
+                            timeout=15
+                        )
+                    except:
+                        pass  # Skip failed images
+                
+                # Delete immediately
+                del rsp
+                
+                time.sleep(0.05)
+            
+            # Clear response list
+            del resp_list
+            
+            # Separator
+            if idx < total:
+                update.message.reply_text("━━━━━━━━━━━━━━━━━━━━")
+            
+            # Force cleanup after EVERY submission
             import gc
             gc.collect()
-            
-            print(f"[VIEW_CHECKLIST] ✓ Completed batch {batch_start//BATCH_SIZE + 1}")
-
-        # Cleanup and completion
+        
+        # Done
         try:
             progress_msg.delete()
         except:
             pass
-            
-        update.message.reply_text(
-            f"✅ Displayed all {total_submissions} checklist submission(s).\n\n"
-            "Use /viewchecklist to view more checklists."
-        )
         
-        print(f"[VIEW_CHECKLIST] Successfully completed all {total_submissions} submissions")
+        update.message.reply_text(f"✅ Displayed {total} submissions.")
         return ConversationHandler.END
 
-    except requests.exceptions.Timeout:
-        print(f"[VIEW_CHECKLIST] ERROR: Request timed out")
-        update.message.reply_text(
-            "❌ Request timed out while loading details.\n"
-            "Please try again later."
-        )
-        return ConversationHandler.END
     except Exception as e:
-        print(f"[VIEW_CHECKLIST] ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        update.message.reply_text(
-            f"❌ Error displaying checklist: {str(e)}\n\n"
-            "Please try again or contact admin."
-        )
+        print(f"[VIEW] Error: {e}")
+        update.message.reply_text("❌ Error. Try again.")
         return ConversationHandler.END
 
 # === Dispatcher & Webhook ===
