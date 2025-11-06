@@ -4325,237 +4325,131 @@ def view_checklist_show_outlet(update: Update, context):
     # Now we have time to process without timeout
     chat_id = update.message.chat_id
 
-    # Store all submissions in context for sequential processing
-    context.user_data['all_submissions'] = submissions
-    context.user_data['submission_index'] = 0
-    context.user_data['total_submissions'] = total
-    context.user_data['view_chat_id'] = chat_id
-
-    # Start processing the first submission
-    process_next_submission(context)
-
-    return ConversationHandler.END
-
-
-def process_next_submission(context):
-    """Process the next submission in the queue"""
     try:
-        all_submissions = context.user_data.get('all_submissions', [])
-        idx = context.user_data.get('submission_index', 0)
-        total = context.user_data.get('total_submissions', 0)
-        chat_id = context.user_data.get('view_chat_id')
+        # Process in small chunks with progress updates
+        for idx, sub in enumerate(submissions, 1):
+            sub_id = sub.get("submissionId")
 
-        if not all_submissions or idx >= len(all_submissions):
-            # All submissions processed
-            bot.send_message(
-                chat_id=chat_id,
-                text=f"✅ Completed! Displayed {total} submissions."
-            )
-            # Clear context data
-            context.user_data.pop('all_submissions', None)
-            context.user_data.pop('submission_index', None)
-            context.user_data.pop('total_submissions', None)
-            context.user_data.pop('view_chat_id', None)
-            print(f"[VIEW] Successfully completed {total} submissions")
-            return
+            # Send progress every 3 submissions
+            if idx % 3 == 0:
+                bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⏳ Processing {idx}/{total}..."
+                )
 
-        sub = all_submissions[idx]
-        sub_id = sub.get("submissionId")
-        current_num = idx + 1
+            # Fetch responses for this submission
+            try:
+                response = requests.get(
+                    "https://restaurant-dashboard-nqbi.onrender.com/api/checklist-data",
+                    timeout=15
+                )
+                response.raise_for_status()
+                data = response.json()
 
-        # Send progress update
-        if current_num % 3 == 0:
-            bot.send_message(
-                chat_id=chat_id,
-                text=f"⏳ Processing {current_num}/{total}..."
-            )
+                # Filter for this submission
+                resp_list = [x for x in data.get("responses", []) if x.get("submissionId") == sub_id]
 
-        # Fetch responses for this submission
-        try:
-            response = requests.get(
-                "https://restaurant-dashboard-nqbi.onrender.com/api/checklist-data",
-                timeout=15
-            )
-            response.raise_for_status()
-            data = response.json()
+                # Clear immediately
+                del response
+                del data
 
-            # Filter for this submission
-            resp_list = [x for x in data.get("responses", []) if x.get("submissionId") == sub_id]
+            except Exception as e:
+                print(f"[VIEW] Error fetching: {e}")
+                bot.send_message(chat_id=chat_id, text=f"⚠️ Skipped submission {idx}")
+                continue
 
-            # Clear immediately
-            del response
-            del data
+            if not resp_list:
+                continue
 
-        except Exception as e:
-            print(f"[VIEW] Error fetching: {e}")
-            bot.send_message(chat_id=chat_id, text=f"⚠️ Skipped submission {current_num}")
-            # Move to next submission
-            context.user_data['submission_index'] = idx + 1
-            process_next_submission(context)
-            return
+            # Send header
+            try:
+                bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"📋 **{idx}/{total}**\n"
+                        f"🆔 {sub_id}\n"
+                        f"📅 {sub.get('date')}\n"
+                        f"⏰ {sub.get('timeSlot')}\n"
+                        f"🏢 {sub.get('outlet')}\n"
+                        f"👤 {sub.get('submittedBy')}\n"
+                        f"━━━━━━━━━━━━━━━━━"
+                    ),
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                print(f"[VIEW] Error sending header: {e}")
 
-        if not resp_list:
-            # No responses, move to next submission
-            context.user_data['submission_index'] = idx + 1
-            process_next_submission(context)
-            return
+            # Send responses
+            for q_num, rsp in enumerate(resp_list, 1):
+                q = rsp.get("question", "")[:100]  # Truncate
+                a = rsp.get("answer", "")[:50]
+                img = rsp.get("image", "")
 
-        # Send header
-        try:
-            bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"📋 **{current_num}/{total}**\n"
-                    f"🆔 {sub_id}\n"
-                    f"📅 {sub.get('date')}\n"
-                    f"⏰ {sub.get('timeSlot')}\n"
-                    f"🏢 {sub.get('outlet')}\n"
-                    f"👤 {sub.get('submittedBy')}\n"
-                    f"━━━━━━━━━━━━━━━━━"
-                ),
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            print(f"[VIEW] Error sending header: {e}")
+                try:
+                    # Send Q&A
+                    bot.send_message(
+                        chat_id=chat_id,
+                        text=f"**Q{q_num}:** {q}\n**A:** {a}",
+                        parse_mode='Markdown'
+                    )
 
-        # Store current submission data for pagination
-        context.user_data['current_submission'] = {
-            'idx': current_num,
-            'total': total,
-            'sub_id': sub_id,
-            'sub': sub,
-            'resp_list': resp_list,
-            'chat_id': chat_id
-        }
+                    # Send image
+                    if img and "/api/image-proxy/" in img:
+                        fid = img.split("/")[-1]
+                        try:
+                            bot.send_photo(
+                                chat_id=chat_id,
+                                photo=f"https://drive.google.com/uc?export=download&id={fid}",
+                                caption=f"📸 Q{q_num}",
+                                timeout=20
+                            )
+                        except:
+                            pass  # Skip failed images
 
-        # Send first batch of 7 responses
-        send_response_batch(context, 0, 7)
+                except Exception as e:
+                    print(f"[VIEW] Error sending Q{q_num}: {e}")
 
-        # Garbage collection
-        import gc
-        gc.collect()
+                # Small delay
+                time.sleep(0.05)
+
+                # Delete response
+                del rsp
+
+            # Clear response list
+            del resp_list
+
+            # Separator
+            if idx < total:
+                try:
+                    bot.send_message(chat_id=chat_id, text="━━━━━━━━━━━━━━━━━━━━")
+                except:
+                    pass
+
+            # Garbage collection
+            import gc
+            gc.collect()
+
+        # Send completion message
+        bot.send_message(
+            chat_id=chat_id,
+            text=f"✅ Completed! Displayed {total} submissions."
+        )
+
+        print(f"[VIEW] Successfully completed {total} submissions")
 
     except Exception as e:
-        print(f"[VIEW] Critical error in process_next_submission: {e}")
+        print(f"[VIEW] Critical error: {e}")
         import traceback
         traceback.print_exc()
         try:
             bot.send_message(
-                chat_id=context.user_data.get('view_chat_id'),
-                text=f"❌ Error occurred during processing."
+                chat_id=chat_id,
+                text=f"❌ Error occurred. Displayed {idx if 'idx' in locals() else 0}/{total} submissions."
             )
         except:
             pass
 
-
-def send_response_batch(context, start_idx, batch_size):
-    """Send a batch of responses (7 at a time) with pagination"""
-    submission_data = context.user_data.get('current_submission', {})
-    if not submission_data:
-        return
-
-    resp_list = submission_data['resp_list']
-    chat_id = submission_data['chat_id']
-    total_responses = len(resp_list)
-
-    end_idx = min(start_idx + batch_size, total_responses)
-
-    # Send responses for this batch
-    for i in range(start_idx, end_idx):
-        rsp = resp_list[i]
-        q_num = i + 1
-        q = rsp.get("question", "")[:100]  # Truncate
-        a = rsp.get("answer", "")[:50]
-        img = rsp.get("image", "")
-
-        try:
-            # Send Q&A
-            bot.send_message(
-                chat_id=chat_id,
-                text=f"**Q{q_num}:** {q}\n**A:** {a}",
-                parse_mode='Markdown'
-            )
-
-            # Send image
-            if img and "/api/image-proxy/" in img:
-                fid = img.split("/")[-1]
-                try:
-                    bot.send_photo(
-                        chat_id=chat_id,
-                        photo=f"https://drive.google.com/uc?export=download&id={fid}",
-                        caption=f"📸 Q{q_num}",
-                        timeout=20
-                    )
-                except:
-                    pass  # Skip failed images
-
-        except Exception as e:
-            print(f"[VIEW] Error sending Q{q_num}: {e}")
-
-        # Small delay
-        time.sleep(0.05)
-
-    # If there are more responses, show Continue button
-    if end_idx < total_responses:
-        keyboard = [[InlineKeyboardButton("➡️ Continue (Next 7 Responses)", callback_data=f"continue_responses_{end_idx}")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        bot.send_message(
-            chat_id=chat_id,
-            text=f"📊 Showing {end_idx}/{total_responses} responses\n\nClick Continue to see more...",
-            reply_markup=reply_markup
-        )
-    else:
-        # All responses shown for this submission
-        bot.send_message(
-            chat_id=chat_id,
-            text=f"✅ All {total_responses} responses displayed for this submission."
-        )
-
-        # Add separator
-        idx = submission_data.get('idx', 0)
-        total = submission_data.get('total', 0)
-        if idx < total:
-            try:
-                bot.send_message(chat_id=chat_id, text="━━━━━━━━━━━━━━━━━━━━")
-            except:
-                pass
-
-        # Clear current submission data
-        if 'current_submission' in context.user_data:
-            del context.user_data['current_submission']
-
-        # Move to next submission
-        current_index = context.user_data.get('submission_index', 0)
-        context.user_data['submission_index'] = current_index + 1
-        process_next_submission(context)
-
-
-def view_checklist_continue_callback(update: Update, context):
-    """Handle the Continue button callback for pagination"""
-    query = update.callback_query
-    query.answer()
-
-    # Extract offset from callback_data
-    callback_data = query.data
-    if not callback_data.startswith("continue_responses_"):
-        return
-
-    try:
-        offset = int(callback_data.split("_")[-1])
-    except ValueError:
-        query.edit_message_text("❌ Invalid pagination data.")
-        return
-
-    # Send next batch
-    batch_size = 7
-    send_response_batch(context, offset, batch_size)
-
-    # Remove the Continue button from previous message
-    try:
-        query.edit_message_reply_markup(reply_markup=None)
-    except:
-        pass
+    return ConversationHandler.END
 
 # === Dispatcher & Webhook ===
 @app.route(WEBHOOK_PATH, methods=["POST"])
@@ -4650,9 +4544,6 @@ def setup_dispatcher():
     dispatcher.add_handler(CommandHandler("testchecklistreminders", test_checklist_reminders))
     dispatcher.add_handler(CommandHandler("testchecklistreminder", send_test_checklist_reminder))
     dispatcher.add_handler(CommandHandler("reminderstatus", reminder_status_cmd))
-
-    # Callback query handlers for inline buttons
-    dispatcher.add_handler(CallbackQueryHandler(view_checklist_continue_callback, pattern="^continue_responses_"))
 
     # Set bot commands menu
     try:
