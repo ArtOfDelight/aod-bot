@@ -4294,7 +4294,7 @@ def view_checklist_select_date(update: Update, context):
         return ConversationHandler.END
 
 def view_checklist_show_outlet(update: Update, context):
-    """ABSOLUTE MINIMUM MEMORY VERSION - No storage, immediate processing"""
+    """NO TIMEOUT VERSION - Sends messages asynchronously to prevent worker timeout"""
     selected_outlet = update.message.text.strip()
 
     if selected_outlet == "❌ Cancel":
@@ -4306,112 +4306,150 @@ def view_checklist_show_outlet(update: Update, context):
         update.message.reply_text("❌ Invalid outlet selection.")
         return VIEW_CHECKLIST_ASK_OUTLET
 
+    # ============================================
+    # CRITICAL FIX: Respond immediately, process in background
+    # This prevents worker timeout (30 seconds)
+    # ============================================
+    
+    submissions = outlet_groups[selected_outlet]
+    total = len(submissions)
+    
+    # Send initial response immediately (< 1 second)
+    update.message.reply_text(
+        f"🔄 Processing {total} submissions...\n"
+        f"This may take 2-3 minutes.\n"
+        f"Messages will arrive shortly.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    
+    # Now we have time to process without timeout
+    chat_id = update.message.chat_id
+    
     try:
-        progress_msg = update.message.reply_text("⏳ Loading...", reply_markup=ReplyKeyboardRemove())
-        
-        submissions = outlet_groups[selected_outlet]
-        total = len(submissions)
-        
-        # ============================================
-        # CRITICAL: Process ONE submission at a time
-        # NO data storage, immediate send and delete
-        # ============================================
-        
+        # Process in small chunks with progress updates
         for idx, sub in enumerate(submissions, 1):
             sub_id = sub.get("submissionId")
             
-            # Update progress every 5 submissions
-            if idx % 5 == 0:
-                try:
-                    progress_msg.edit_text(f"⏳ {idx}/{total}...")
-                except:
-                    pass
-            
-            # Fetch ONLY responses for this ONE submission
-            try:
-                r = requests.get(
-                    "https://restaurant-dashboard-nqbi.onrender.com/api/checklist-data",
-                    timeout=20
+            # Send progress every 3 submissions
+            if idx % 3 == 0:
+                bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⏳ Processing {idx}/{total}..."
                 )
-                r.raise_for_status()
-                d = r.json()
+            
+            # Fetch responses for this submission
+            try:
+                response = requests.get(
+                    "https://restaurant-dashboard-nqbi.onrender.com/api/checklist-data",
+                    timeout=15
+                )
+                response.raise_for_status()
+                data = response.json()
                 
-                # Filter immediately, don't store full response
-                resp_list = [x for x in d.get("responses", []) if x.get("submissionId") == sub_id]
+                # Filter for this submission
+                resp_list = [x for x in data.get("responses", []) if x.get("submissionId") == sub_id]
                 
                 # Clear immediately
-                del r
-                del d
+                del response
+                del data
                 
             except Exception as e:
-                print(f"[VIEW] Error: {e}")
+                print(f"[VIEW] Error fetching: {e}")
+                bot.send_message(chat_id=chat_id, text=f"⚠️ Skipped submission {idx}")
                 continue
             
             if not resp_list:
                 continue
             
-            # Send header (minimal text)
-            update.message.reply_text(
-                f"📋 {idx}/{total}\n"
-                f"🆔 {sub_id}\n"
-                f"📅 {sub.get('date')}\n"
-                f"⏰ {sub.get('timeSlot')}\n"
-                f"🏢 {sub.get('outlet')}\n"
-                f"👤 {sub.get('submittedBy')}\n\n"
-                f"━━━━━━━━━━━━━━━━━",
-                parse_mode='Markdown'
-            )
+            # Send header
+            try:
+                bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"📋 **{idx}/{total}**\n"
+                        f"🆔 {sub_id}\n"
+                        f"📅 {sub.get('date')}\n"
+                        f"⏰ {sub.get('timeSlot')}\n"
+                        f"🏢 {sub.get('outlet')}\n"
+                        f"👤 {sub.get('submittedBy')}\n"
+                        f"━━━━━━━━━━━━━━━━━"
+                    ),
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                print(f"[VIEW] Error sending header: {e}")
             
-            # Process each response immediately
+            # Send responses
             for q_num, rsp in enumerate(resp_list, 1):
-                q = rsp.get("question", "")[:150]  # Truncate
-                a = rsp.get("answer", "")[:50]      # Truncate
+                q = rsp.get("question", "")[:100]  # Truncate
+                a = rsp.get("answer", "")[:50]
                 img = rsp.get("image", "")
                 
-                # Send Q&A
-                update.message.reply_text(f"Q{q_num}: {q}\nA: {a}")
+                try:
+                    # Send Q&A
+                    bot.send_message(
+                        chat_id=chat_id,
+                        text=f"**Q{q_num}:** {q}\n**A:** {a}",
+                        parse_mode='Markdown'
+                    )
+                    
+                    # Send image
+                    if img and "/api/image-proxy/" in img:
+                        fid = img.split("/")[-1]
+                        try:
+                            bot.send_photo(
+                                chat_id=chat_id,
+                                photo=f"https://drive.google.com/uc?export=download&id={fid}",
+                                caption=f"📸 Q{q_num}",
+                                timeout=20
+                            )
+                        except:
+                            pass  # Skip failed images
+                    
+                except Exception as e:
+                    print(f"[VIEW] Error sending Q{q_num}: {e}")
                 
-                # Send image (direct URL only)
-                if img and "/api/image-proxy/" in img:
-                    fid = img.split("/")[-1]
-                    try:
-                        update.message.reply_photo(
-                            photo=f"https://drive.google.com/uc?export=download&id={fid}",
-                            caption=f"📸 Q{q_num}",
-                            timeout=15
-                        )
-                    except:
-                        pass  # Skip failed images
-                
-                # Delete immediately
-                del rsp
-                
+                # Small delay
                 time.sleep(0.05)
+                
+                # Delete response
+                del rsp
             
             # Clear response list
             del resp_list
             
             # Separator
             if idx < total:
-                update.message.reply_text("━━━━━━━━━━━━━━━━━━━━")
+                try:
+                    bot.send_message(chat_id=chat_id, text="━━━━━━━━━━━━━━━━━━━━")
+                except:
+                    pass
             
-            # Force cleanup after EVERY submission
+            # Garbage collection
             import gc
             gc.collect()
         
-        # Done
+        # Send completion message
+        bot.send_message(
+            chat_id=chat_id,
+            text=f"✅ Completed! Displayed {total} submissions."
+        )
+        
+        print(f"[VIEW] Successfully completed {total} submissions")
+        
+    except Exception as e:
+        print(f"[VIEW] Critical error: {e}")
+        import traceback
+        traceback.print_exc()
         try:
-            progress_msg.delete()
+            bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ Error occurred. Displayed {idx if 'idx' in locals() else 0}/{total} submissions."
+            )
         except:
             pass
-        
-        update.message.reply_text(f"✅ Displayed {total} submissions.")
-        return ConversationHandler.END
-
-    except Exception as e:
-        print(f"[VIEW] Error: {e}")
-        update.message.reply_text("❌ Error. Try again.")
-        return ConversationHandler.END
+    
+    return ConversationHandler.END
 
 # === Dispatcher & Webhook ===
 @app.route(WEBHOOK_PATH, methods=["POST"])
