@@ -20,6 +20,7 @@ from telegram import (
     Bot, Update, KeyboardButton, ReplyKeyboardMarkup,
     ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 )
+from telegram.error import BadRequest
 from telegram.ext import (
     Dispatcher, CommandHandler, MessageHandler,
     CallbackQueryHandler, Filters, ConversationHandler
@@ -2389,7 +2390,7 @@ def checklist_status_handle_date(update: Update, context):
         else:
             try:
                 progress_msg.edit_text(full_message, parse_mode="Markdown")
-            except telegram.error.BadRequest as e:
+            except BadRequest as e:
                 # If message can't be edited (too old, already deleted, etc.), send a new one
                 print(f"Could not edit message: {e}. Sending new message instead.")
                 try:
