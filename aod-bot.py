@@ -224,6 +224,7 @@ TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_SUBTYPE, TICKET_ASK_ISSUE = rang
 ALLOWANCE_ASK_CONTACT, ALLOWANCE_ASK_TRIP_TYPE, ALLOWANCE_ASK_IMAGE = range(30, 33)
 POWER_ASK_CONTACT, POWER_ASK_STATUS = range(40, 42)
 VIEW_CHECKLIST_ASK_DATE, VIEW_CHECKLIST_ASK_OUTLET, VIEW_CHECKLIST_SHOW_DETAILS = range(200, 203)
+CHECKLIST_STATUS_ASK_DATE = 210
 KITCHEN_ASK_CONTACT = 100
 KITCHEN_ASK_ACTION = 101
 KITCHEN_ASK_ACTIVITY = 102 # Added TICKET_ASK_SUBTYPE
@@ -2180,6 +2181,225 @@ def getroster(update: Update, context):
     except Exception as e:
         update.message.reply_text(f"Error generating roster: {e}")
         print(f"Error sending roster: {e}")
+
+def checklist_status_start(update: Update, context):
+    """Start checklist status command - Ask for date"""
+    try:
+        # Generate date options
+        today = datetime.datetime.now(INDIA_TZ)
+        dates = []
+        date_labels = []
+
+        # Add "Today"
+        dates.append(today.strftime("%d/%m/%Y"))
+        date_labels.append("📅 Today")
+
+        # Add last 6 days
+        for i in range(1, 7):
+            past_date = today - datetime.timedelta(days=i)
+            dates.append(past_date.strftime("%d/%m/%Y"))
+            if i == 1:
+                date_labels.append("📅 Yesterday")
+            else:
+                date_labels.append(f"📅 {past_date.strftime('%d %b %Y')}")
+
+        # Store dates in context
+        context.user_data['checklist_status_dates'] = dates
+
+        # Create keyboard with date options
+        keyboard = []
+        for label in date_labels:
+            keyboard.append([KeyboardButton(label)])
+        keyboard.append([KeyboardButton("❌ Cancel")])
+
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
+        update.message.reply_text(
+            "📋 *Checklist Completion Status*\n\n"
+            "Please select a date to view checklist status:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+        return CHECKLIST_STATUS_ASK_DATE
+
+    except Exception as e:
+        print(f"Error in checklist_status_start: {e}")
+        import traceback
+        traceback.print_exc()
+        update.message.reply_text(
+            "❌ Error starting checklist status view. Please try again.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+def checklist_status_handle_date(update: Update, context):
+    """Handle date selection and show checklist status"""
+    try:
+        selected_text = update.message.text.strip()
+
+        # Handle cancel
+        if selected_text == "❌ Cancel":
+            update.message.reply_text(
+                "❌ Checklist status view cancelled.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
+        # Extract date index from selection
+        dates = context.user_data.get('checklist_status_dates', [])
+
+        # Map selection to date
+        date_map = {
+            "📅 Today": 0,
+            "📅 Yesterday": 1,
+        }
+
+        selected_date = None
+        if selected_text in date_map:
+            selected_date = dates[date_map[selected_text]]
+        else:
+            # Try to match other date formats
+            for i, date in enumerate(dates):
+                date_obj = datetime.datetime.strptime(date, "%d/%m/%Y")
+                if selected_text == f"📅 {date_obj.strftime('%d %b %Y')}":
+                    selected_date = date
+                    break
+
+        if not selected_date:
+            update.message.reply_text(
+                "❌ Invalid date selection. Please try again.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
+        # Send loading message
+        progress_msg = update.message.reply_text(
+            f"⏳ Fetching checklist completion status for {selected_date}...",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+        # Fetch data from API with date parameter
+        response = requests.get(
+            "https://restaurant-dashboard-nqbi.onrender.com/api/checklist-completion-status",
+            params={"date": selected_date},
+            timeout=30
+        )
+        response.raise_for_status()
+
+        data = response.json()
+
+        if not data.get("success"):
+            update.message.reply_text("❌ Failed to fetch checklist status data.")
+            return ConversationHandler.END
+
+        outlets = data.get("data", [])
+
+        if not outlets:
+            update.message.reply_text(f"📋 No checklist data available for {selected_date}.")
+            return ConversationHandler.END
+
+        # Format the message
+        message_parts = ["```"]
+        message_parts.append(f"📋 *Checklist Status - {selected_date}*")
+        message_parts.append("")
+
+        for outlet in outlets:
+            outlet_name = outlet.get("outletName", "Unknown")
+            outlet_code = outlet.get("outletCode", "N/A")
+            overall_status = outlet.get("overallStatus", "Unknown")
+            completion_pct = outlet.get("completionPercentage", 0)
+            total_employees = outlet.get("totalScheduledEmployees", 0)
+            last_submission = outlet.get("lastSubmissionTime", "")
+
+            # Status emoji
+            status_emoji = "✅" if overall_status == "Completed" else "🟡" if overall_status == "Partial" else "❌"
+
+            message_parts.append(f"{status_emoji} *{outlet_name} ({outlet_code})*")
+            message_parts.append(f"Overall: {overall_status} ({completion_pct}%)")
+            message_parts.append(f"Scheduled Employees: {total_employees}")
+
+            # Time slot details
+            time_slots = outlet.get("timeSlotStatus", [])
+            if time_slots:
+                message_parts.append("Time Slots:")
+                for slot in time_slots:
+                    slot_name = slot.get("timeSlot", "Unknown")
+                    slot_status = slot.get("status", "Unknown")
+                    employee_count = slot.get("employeeCount", 0)
+                    slot_emoji = "✅" if slot_status == "Completed" else "❌"
+
+                    slot_line = f"  {slot_emoji} {slot_name}: {slot_status}"
+                    if slot_status == "Completed":
+                        submitted_by = slot.get("submittedBy", "Unknown")
+                        timestamp = slot.get("timestamp", "")
+                        slot_line += f"\n     By: {submitted_by}"
+                        if timestamp:
+                            slot_line += f"\n     At: {timestamp}"
+                    slot_line += f"\n     Employees: {employee_count}"
+                    message_parts.append(slot_line)
+
+            if last_submission:
+                message_parts.append(f"Last Submission: {last_submission}")
+
+            message_parts.append("")
+
+        # Remove last empty line
+        if message_parts[-1] == "":
+            message_parts.pop()
+
+        message_parts.append("```")
+
+        # Send the formatted message
+        full_message = "\n".join(message_parts)
+
+        # Telegram has a 4096 character limit, so split if needed
+        if len(full_message) > 4000:
+            # Split by outlet
+            current_msg = ["```", f"📋 *Checklist Status - {selected_date}*", ""]
+
+            for outlet in outlets:
+                outlet_name = outlet.get("outletName", "Unknown")
+                outlet_code = outlet.get("outletCode", "N/A")
+                overall_status = outlet.get("overallStatus", "Unknown")
+                completion_pct = outlet.get("completionPercentage", 0)
+                status_emoji = "✅" if overall_status == "Completed" else "🟡" if overall_status == "Partial" else "❌"
+
+                outlet_info = f"{status_emoji} *{outlet_name} ({outlet_code})*: {overall_status} ({completion_pct}%)"
+
+                # If adding this outlet would exceed limit, send current message
+                if len("\n".join(current_msg)) + len(outlet_info) > 3900:
+                    current_msg.append("```")
+                    progress_msg.edit_text("\n".join(current_msg), parse_mode="Markdown")
+                    # Start new message
+                    current_msg = ["```"]
+
+                current_msg.append(outlet_info)
+
+            current_msg.append("```")
+            update.message.reply_text("\n".join(current_msg), parse_mode="Markdown")
+        else:
+            progress_msg.edit_text(full_message, parse_mode="Markdown")
+
+        print(f"Checklist completion status sent successfully for {selected_date}")
+        return ConversationHandler.END
+
+    except requests.exceptions.RequestException as e:
+        update.message.reply_text(
+            f"❌ Network error: Could not fetch data from server.\n{str(e)}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        print(f"Error fetching checklist completion status: {e}")
+        return ConversationHandler.END
+    except Exception as e:
+        update.message.reply_text(
+            f"❌ Error generating checklist status: {e}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        print(f"Error sending checklist status: {e}")
+        import traceback
+        traceback.print_exc()
+        return ConversationHandler.END
 
 def checklist_completion_status(update: Update, context):
     """Show checklist completion status for all outlets"""
@@ -4304,7 +4524,18 @@ def setup_dispatcher():
             CommandHandler("cancel", cancel),
         ]
     ))
-    
+
+    # Checklist Status conversation handler
+    dispatcher.add_handler(ConversationHandler(
+        entry_points=[CommandHandler("checkliststatus", checklist_status_start)],
+        states={
+            CHECKLIST_STATUS_ASK_DATE: [MessageHandler(Filters.text & ~Filters.command, checklist_status_handle_date)],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+        ]
+    ))
+
     # Standalone command handlers
     dispatcher.add_handler(CommandHandler("reset", reset))
     dispatcher.add_handler(CommandHandler("statustoday", statustoday))
@@ -4314,7 +4545,6 @@ def setup_dispatcher():
     dispatcher.add_handler(CommandHandler("testchecklistreminders", test_checklist_reminders))
     dispatcher.add_handler(CommandHandler("testchecklistreminder", send_test_checklist_reminder))
     dispatcher.add_handler(CommandHandler("reminderstatus", reminder_status_cmd))
-    dispatcher.add_handler(CommandHandler("checkliststatus", checklist_completion_status))
 
     # Set bot commands menu
     try:
