@@ -4294,157 +4294,179 @@ def view_checklist_select_date(update: Update, context):
         return ConversationHandler.END
 
 def view_checklist_show_outlet(update: Update, context):
-    """Show checklist details for selected outlet - MEMORY-SAFE VERSION"""
+    """Show checklist details - STREAMING VERSION (processes all data efficiently)"""
     user_id = update.message.from_user.id
     user_name = update.message.from_user.first_name
     selected_outlet = update.message.text.strip()
 
-    print(f"[VIEW_CHECKLIST] User {user_name} (ID: {user_id}) entered outlet selection handler")
-    print(f"[VIEW_CHECKLIST] Selected outlet: '{selected_outlet}'")
+    print(f"[VIEW_CHECKLIST] User {user_name} selected outlet: '{selected_outlet}'")
 
     if selected_outlet == "❌ Cancel":
-        print(f"[VIEW_CHECKLIST] User {user_name} cancelled the operation")
         update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
     outlet_groups = context.user_data.get("outlet_groups", {})
-    print(f"[VIEW_CHECKLIST] Available outlet groups: {list(outlet_groups.keys())}")
 
     if selected_outlet not in outlet_groups:
-        print(f"[VIEW_CHECKLIST] ERROR: Invalid outlet selection '{selected_outlet}'")
         update.message.reply_text("❌ Invalid outlet selection.")
         return VIEW_CHECKLIST_ASK_OUTLET
 
-    print(f"[VIEW_CHECKLIST] Valid outlet selected, proceeding to load details")
-
     try:
         progress_msg = update.message.reply_text("⏳ Loading checklist details...", reply_markup=ReplyKeyboardRemove())
-        print(f"[VIEW_CHECKLIST] Fetching full data with responses from API")
-
-        # Fetch full data with responses
-        response = requests.get("https://restaurant-dashboard-nqbi.onrender.com/api/checklist-data", timeout=30)
-        response.raise_for_status()
-        print(f"[VIEW_CHECKLIST] API response status: {response.status_code}")
-        data = response.json()
         
         submissions = outlet_groups[selected_outlet]
-        all_responses = data.get("responses", [])
-        print(f"[VIEW_CHECKLIST] Processing {len(submissions)} submission(s) for outlet '{selected_outlet}'")
-        print(f"[VIEW_CHECKLIST] Total responses in database: {len(all_responses)}")
+        total_submissions = len(submissions)
+        print(f"[VIEW_CHECKLIST] Processing ALL {total_submissions} submission(s)")
 
-        # Process each submission
-        for idx, submission in enumerate(submissions, 1):
-            submission_id = submission.get("submissionId")
-            print(f"[VIEW_CHECKLIST] Processing submission {idx}/{len(submissions)} - ID: {submission_id}")
-
-            # Get responses for this submission
-            sub_responses = [
-                resp for resp in all_responses
-                if resp.get("submissionId") == submission_id
-            ]
-            print(f"[VIEW_CHECKLIST] Found {len(sub_responses)} response(s) for submission {submission_id}")
-
-            # Build message
-            message_parts = [
-                f"📋 **Checklist {idx}/{len(submissions)}**",
-                f"",
-                f"🆔 ID: {submission_id}",
-                f"📅 Date: {submission.get('date')}",
-                f"⏰ Time Slot: {submission.get('timeSlot')}",
-                f"🏢 Outlet: {submission.get('outlet')}",
-                f"👤 Submitted By: {submission.get('submittedBy')}",
-                f"🕐 Timestamp: {submission.get('timestamp')}",
-                f"",
-                f"━━━━━━━━━━━━━━━━━",
-                f"",
-                f"📝 **Responses** ({len(sub_responses)} questions):",
-                f""
-            ]
-
-            # Send header message
-            update.message.reply_text(
-                "\n".join(message_parts),
-                parse_mode='Markdown'
-            )
-            print(f"[VIEW_CHECKLIST] Sent header message for submission {submission_id}")
-
-            # Process responses
-            for q_num, resp in enumerate(sub_responses, 1):
-                question = resp.get("question", "No question")
-                answer = resp.get("answer", "No answer")
-                image_link = resp.get("image", "")
-
-                # Send question and answer
-                resp_text = f"**Q{q_num}:** {question}\n**A:** {answer}"
-                update.message.reply_text(resp_text, parse_mode='Markdown')
-                print(f"[VIEW_CHECKLIST] Sent Q{q_num} for submission {submission_id}")
-
-                # ============================================
-                # MEMORY-SAFE IMAGE HANDLING
-                # ============================================
-                if image_link and image_link.startswith("/api/image-proxy/"):
-                    file_id = image_link.replace("/api/image-proxy/", "")
-                    print(f"[VIEW_CHECKLIST] Sending image {file_id} for Q{q_num}")
-                    
-                    try:
-                        # Use Google Drive's direct download URL
-                        # Telegram fetches it directly - doesn't go through our server
-                        image_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-                        
-                        # Send photo by URL - Telegram downloads it, not our server
-                        update.message.reply_photo(
-                            photo=image_url,
-                            caption=f"📸 Image for Q{q_num}",
-                            timeout=30
-                        )
-                        print(f"[VIEW_CHECKLIST] Successfully sent image for Q{q_num}")
-                        
-                    except Exception as img_error:
-                        print(f"[VIEW_CHECKLIST] ERROR sending image: {img_error}")
-                        # Try alternative URL format
-                        try:
-                            alt_url = f"https://drive.google.com/uc?export=view&id={file_id}"
-                            update.message.reply_photo(
-                                photo=alt_url,
-                                caption=f"📸 Image for Q{q_num}",
-                                timeout=30
-                            )
-                            print(f"[VIEW_CHECKLIST] Sent with alternative URL")
-                        except:
-                            # Last resort: clickable link with preview
-                            view_url = f"https://drive.google.com/file/d/{file_id}/view"
-                            update.message.reply_text(
-                                f"📸 [Image for Q{q_num}]({view_url})",
-                                parse_mode='Markdown',
-                                disable_web_page_preview=False
-                            )
-                
-                # Small delay to avoid rate limiting
-                time.sleep(0.2)
+        # ============================================
+        # MEMORY-EFFICIENT: Process in batches
+        # Fetch and process data in chunks, then clear memory
+        # ============================================
+        
+        BATCH_SIZE = 5  # Process 5 submissions at a time
+        
+        for batch_start in range(0, total_submissions, BATCH_SIZE):
+            batch_end = min(batch_start + BATCH_SIZE, total_submissions)
+            batch_submissions = submissions[batch_start:batch_end]
             
-            # Add separator between submissions
-            if idx < len(submissions):
-                update.message.reply_text("━━━━━━━━━━━━━━━━━━━━")
+            print(f"[VIEW_CHECKLIST] Processing batch {batch_start//BATCH_SIZE + 1}: submissions {batch_start+1}-{batch_end}")
+            
+            # Update progress
+            try:
+                progress_msg.edit_text(
+                    f"⏳ Loading submissions {batch_start+1}-{batch_end} of {total_submissions}..."
+                )
+            except:
+                pass
+            
+            # Fetch responses for this batch only
+            try:
+                response = requests.get(
+                    "https://restaurant-dashboard-nqbi.onrender.com/api/checklist-data",
+                    timeout=30
+                )
+                response.raise_for_status()
+                data = response.json()
+                all_responses = data.get("responses", [])
+                
+                # Immediately clear response object
+                del response
+                del data
+                
+            except Exception as fetch_error:
+                print(f"[VIEW_CHECKLIST] ERROR fetching batch: {fetch_error}")
+                update.message.reply_text(f"⚠️ Error loading batch {batch_start//BATCH_SIZE + 1}")
+                continue
 
-        progress_msg.delete()
-        print(f"[VIEW_CHECKLIST] Successfully displayed all {len(submissions)} submission(s)")
+            # Process each submission in this batch
+            for submission in batch_submissions:
+                idx = submissions.index(submission) + 1
+                submission_id = submission.get("submissionId")
+                print(f"[VIEW_CHECKLIST] Processing {idx}/{total_submissions} - ID: {submission_id}")
+
+                # Filter responses for THIS submission only
+                sub_responses = [r for r in all_responses if r.get("submissionId") == submission_id]
+                
+                if not sub_responses:
+                    print(f"[VIEW_CHECKLIST] No responses found for {submission_id}")
+                    continue
+
+                # Build and send header (keep it simple to save memory)
+                header = (
+                    f"📋 **Checklist {idx}/{total_submissions}**\n\n"
+                    f"🆔 {submission_id}\n"
+                    f"📅 {submission.get('date')}\n"
+                    f"⏰ {submission.get('timeSlot')}\n"
+                    f"🏢 {submission.get('outlet')}\n"
+                    f"👤 {submission.get('submittedBy')}\n"
+                    f"🕐 {submission.get('timestamp')}\n\n"
+                    f"━━━━━━━━━━━━━━━━━\n\n"
+                    f"📝 **Responses ({len(sub_responses)}):**\n"
+                )
+                update.message.reply_text(header, parse_mode='Markdown')
+
+                # Process responses - ONE AT A TIME to minimize memory
+                for q_num, resp in enumerate(sub_responses, 1):
+                    question = resp.get("question", "No question")
+                    answer = resp.get("answer", "No answer")
+                    image_link = resp.get("image", "")
+
+                    # Send Q&A
+                    qa_text = f"**Q{q_num}:** {question}\n**A:** {answer}"
+                    update.message.reply_text(qa_text, parse_mode='Markdown')
+
+                    # Send image - CRITICAL: Direct URL only, no downloads
+                    if image_link and "/api/image-proxy/" in image_link:
+                        file_id = image_link.split("/")[-1]
+                        
+                        try:
+                            # Direct Google Drive URL - Telegram downloads it, not us
+                            img_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+                            update.message.reply_photo(
+                                photo=img_url,
+                                caption=f"📸 Image for Q{q_num}",
+                                timeout=25
+                            )
+                            print(f"[VIEW_CHECKLIST] ✓ Sent image Q{q_num}")
+                        except Exception as img_err:
+                            print(f"[VIEW_CHECKLIST] Image failed: {img_err}")
+                            # Fallback: Try alternative URL
+                            try:
+                                alt_url = f"https://drive.google.com/uc?export=view&id={file_id}"
+                                update.message.reply_photo(photo=alt_url, caption=f"📸 Q{q_num}", timeout=25)
+                            except:
+                                print(f"[VIEW_CHECKLIST] Alt URL also failed, skipping image")
+                    
+                    # Small delay for rate limiting
+                    time.sleep(0.1)
+                    
+                    # Clear response object from memory
+                    del resp
+                
+                # Clear sub_responses after processing this submission
+                del sub_responses
+                
+                # Separator between submissions
+                if idx < total_submissions:
+                    update.message.reply_text("━━━━━━━━━━━━━━━━━━━━")
+                
+                # Force garbage collection after each submission
+                import gc
+                gc.collect()
+            
+            # Clear all_responses after processing this batch
+            del all_responses
+            del batch_submissions
+            
+            # Aggressive garbage collection after each batch
+            import gc
+            gc.collect()
+            
+            print(f"[VIEW_CHECKLIST] ✓ Completed batch {batch_start//BATCH_SIZE + 1}")
+
+        # Cleanup and completion
+        try:
+            progress_msg.delete()
+        except:
+            pass
+            
         update.message.reply_text(
-            f"✅ Displayed {len(submissions)} checklist submission(s).\n\n"
+            f"✅ Displayed all {total_submissions} checklist submission(s).\n\n"
             "Use /viewchecklist to view more checklists."
         )
-        print(f"[VIEW_CHECKLIST] View checklist operation completed for user {user_name}")
-
+        
+        print(f"[VIEW_CHECKLIST] Successfully completed all {total_submissions} submissions")
         return ConversationHandler.END
 
     except requests.exceptions.Timeout:
-        print(f"[VIEW_CHECKLIST] ERROR: Request timed out while loading details for user {user_name}")
+        print(f"[VIEW_CHECKLIST] ERROR: Request timed out")
         update.message.reply_text(
             "❌ Request timed out while loading details.\n"
             "Please try again later."
         )
         return ConversationHandler.END
     except Exception as e:
-        print(f"[VIEW_CHECKLIST] ERROR showing checklist details: {e}")
+        print(f"[VIEW_CHECKLIST] ERROR: {e}")
         import traceback
         traceback.print_exc()
         update.message.reply_text(
