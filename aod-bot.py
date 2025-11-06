@@ -2387,7 +2387,16 @@ def checklist_status_handle_date(update: Update, context):
             current_msg.append("```")
             update.message.reply_text("\n".join(current_msg), parse_mode="Markdown")
         else:
-            progress_msg.edit_text(full_message, parse_mode="Markdown")
+            try:
+                progress_msg.edit_text(full_message, parse_mode="Markdown")
+            except telegram.error.BadRequest as e:
+                # If message can't be edited (too old, already deleted, etc.), send a new one
+                print(f"Could not edit message: {e}. Sending new message instead.")
+                try:
+                    progress_msg.delete()
+                except:
+                    pass
+                update.message.reply_text(full_message, parse_mode="Markdown")
 
         print(f"Checklist completion status sent successfully for {selected_date}")
         return ConversationHandler.END
