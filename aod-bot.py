@@ -3508,7 +3508,7 @@ def ticket_handle_type(update: Update, context):
     
     if ticket_type == "🔧 Repair and Maintenance":
         context.user_data["ticket_type"] = "Repair and Maintenance"
-        context.user_data["assigned_to"] = "Nishat","Jatin"
+        context.user_data["assigned_to"] = "Nishat & Jatin"
         context.user_data["ticket_category"] = "Repair and Maintenance"
         prompt_text = "Please describe the repair or maintenance issue. You can send a text message or upload a photo with a caption."
         update.message.reply_text(prompt_text, reply_markup=ReplyKeyboardRemove())
