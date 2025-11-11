@@ -220,7 +220,7 @@ drive = setup_drive()
 
 # === States ===
 ASK_ACTION, ASK_PHONE, ASK_LOCATION = range(3)
-CHECKLIST_ASK_CONTACT, CHECKLIST_ASK_SLOT, CHECKLIST_ASK_QUESTION, CHECKLIST_ASK_IMAGE = range(10, 14)
+CHECKLIST_ASK_CONTACT, CHECKLIST_ASK_SLOT, CHECKLIST_ASK_QUESTION, CHECKLIST_ASK_IMAGE, CHECKLIST_OFFER_TICKET = range(10, 15)
 TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_SUBTYPE, TICKET_ASK_ISSUE = range(20, 24)
 ALLOWANCE_ASK_CONTACT, ALLOWANCE_ASK_TRIP_TYPE, ALLOWANCE_ASK_IMAGE = range(30, 33)
 POWER_ASK_CONTACT, POWER_ASK_STATUS = range(40, 42)
@@ -3079,7 +3079,10 @@ def cl_ask_next_question(update: Update, context):
             ])
             print(f"✓ Saved submission summary to ChecklistSubmissions with ID: {context.user_data['submission_id']}")
             
-            # Success message with details
+            # Success message with details and ticket option
+            keyboard = [[InlineKeyboardButton("🎫 Raise a Ticket", callback_data="goto_ticket")]]
+            reply_markup_inline = InlineKeyboardMarkup(keyboard)
+
             update.message.reply_text(
                 f"✅ Checklist completed successfully!\n\n"
                 f"📋 Submission ID: {context.user_data['submission_id']}\n"
@@ -3087,10 +3090,18 @@ def cl_ask_next_question(update: Update, context):
                 f"🏢 Outlet: {context.user_data['outlet']}\n"
                 f"⏰ Slot: {context.user_data['slot']}\n"
                 f"📅 Date: {context.user_data['date']}\n"
-                f"📸 Images: {len(all_image_hashes)}",
+                f"📸 Images: {len(all_image_hashes)}\n\n"
+                f"Would you like to raise a ticket?",
                 reply_markup=ReplyKeyboardRemove()
             )
-            
+
+            update.message.reply_text(
+                "👇 Click below to raise a ticket or use /start to return to the main menu:",
+                reply_markup=reply_markup_inline
+            )
+
+            return CHECKLIST_OFFER_TICKET
+
         except Exception as e:
             print(f"Failed to save checklist: {e}")
             import traceback
@@ -3102,8 +3113,6 @@ def cl_ask_next_question(update: Update, context):
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
-        
-        return ConversationHandler.END
     
     # Continue with next question
     q_data = context.user_data["questions"][idx]
@@ -3378,6 +3387,32 @@ def cl_handle_image_upload(update: Update, context):
     return cl_ask_next_question(update, context)
 
 # === NEW TICKET HANDLERS ===
+def checklist_goto_ticket(update: Update, context):
+    """Handle transition from checklist completion to ticket creation"""
+    query = update.callback_query
+    query.answer()
+
+    print("Transitioning from checklist to ticket")
+
+    # Generate new ticket ID and update context
+    context.user_data["ticket_id"] = str(uuid.uuid4())[:8]
+    context.user_data["timestamp"] = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+    # Employee info already available from checklist flow
+    print(f"Starting ticket for: emp_name={context.user_data.get('emp_name')}, outlet={context.user_data.get('outlet')}, ticket_id={context.user_data['ticket_id']}")
+
+    # Show ticket type selection
+    keyboard = [
+        ["🔧 Repair and Maintenance"],
+        ["❓ Difficulty in Order"],
+        ["📦 Place an Order"]
+    ]
+    query.message.reply_text(
+        "📝 What type of ticket would you like to raise?",
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return TICKET_ASK_TYPE
+
 def ticket_handle_contact(update: Update, context):
     print("Handling ticket contact verification")
     if not update.message.contact:
@@ -4199,6 +4234,7 @@ def setup_dispatcher():
             CHECKLIST_ASK_SLOT: [MessageHandler(Filters.text & ~Filters.command, cl_load_questions)],
             CHECKLIST_ASK_QUESTION: [MessageHandler(Filters.text & ~Filters.command, cl_handle_answer)],
             CHECKLIST_ASK_IMAGE: [MessageHandler(Filters.photo, cl_handle_image_upload)],
+            CHECKLIST_OFFER_TICKET: [CallbackQueryHandler(checklist_goto_ticket, pattern="^goto_ticket$")],
             TICKET_ASK_CONTACT: [MessageHandler(Filters.contact, ticket_handle_contact)],
             TICKET_ASK_TYPE: [MessageHandler(Filters.text & ~Filters.command, ticket_handle_type)],
             TICKET_ASK_SUBTYPE: [MessageHandler(Filters.text & ~Filters.command, ticket_handle_subtype)],
