@@ -3453,6 +3453,7 @@ def checklist_goto_ticket(update: Update, context):
     # Generate new ticket ID and update context
     context.user_data["ticket_id"] = str(uuid.uuid4())[:8]
     context.user_data["timestamp"] = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    context.user_data["date"] = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d")
 
     # Employee info already available from checklist flow
     print(f"Starting ticket for: emp_name={context.user_data.get('emp_name')}, outlet={context.user_data.get('outlet')}, ticket_id={context.user_data['ticket_id']}")
