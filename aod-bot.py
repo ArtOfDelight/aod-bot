@@ -33,6 +33,7 @@ import requests
 from io import BytesIO
 
 MANAGER_CHAT_ID = 1225343546  # Replace with the actual Telegram chat ID
+AOD019_PHONE = "+918770662766"  # Replace with AOD019's actual phone number
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
 
 # === CHECKLIST REMINDER GROUP CHAT IDS ===
@@ -221,6 +222,7 @@ drive = setup_drive()
 # === States ===
 ASK_ACTION, ASK_PHONE, ASK_LOCATION = range(3)
 CHECKLIST_ASK_CONTACT, CHECKLIST_ASK_SLOT, CHECKLIST_ASK_QUESTION, CHECKLIST_ASK_IMAGE, CHECKLIST_OFFER_TICKET = range(10, 15)
+CHECKLIST_AOD019_OPTION = 15  # AOD019 admin option to skip or fill checklist
 TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_SUBTYPE, TICKET_ASK_ISSUE = range(20, 24)
 ALLOWANCE_ASK_CONTACT, ALLOWANCE_ASK_TRIP_TYPE, ALLOWANCE_ASK_IMAGE = range(30, 33)
 POWER_ASK_CONTACT, POWER_ASK_STATUS = range(40, 42)
@@ -2799,6 +2801,42 @@ def action_selected(update: Update, context):
     query.message.reply_text("Please verify your phone number:", reply_markup=markup)
     return ASK_PHONE
 
+def aod019_checklist_option_handler(update: Update, context):
+    """Handle AOD019's checklist option selection: Filled or Fill"""
+    query = update.callback_query
+    query.answer()
+
+    if query.data == "checklist_filled":
+        # Skip to ticket creation - AOD019 admin bypass
+        # Set up minimal context for ticket flow
+        context.user_data["ticket_id"] = str(uuid.uuid4())[:8]
+        context.user_data["timestamp"] = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        context.user_data["emp_name"] = "AOD019 Admin"
+        context.user_data["outlet"] = "Admin Override"
+
+        # Show ticket type selection
+        keyboard = [
+            ["🔧 Repair and Maintenance"],
+            ["❓ Difficulty in Order"],
+            ["📦 Place an Order"]
+        ]
+        query.message.reply_text(
+            "✅ Checklist marked as filled. Proceeding to ticket creation.\n\n"
+            "📝 What type of ticket would you like to raise?",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return TICKET_ASK_TYPE
+
+    elif query.data == "checklist_fill":
+        # Proceed with normal checklist flow
+        contact_button = KeyboardButton("📱 Send Phone Number", request_contact=True)
+        markup = ReplyKeyboardMarkup([[contact_button]], one_time_keyboard=True, resize_keyboard=True)
+        query.message.reply_text("Please verify your phone number for the checklist:", reply_markup=markup)
+        return CHECKLIST_ASK_CONTACT
+
+    # Fallback
+    return ConversationHandler.END
+
 def handle_phone(update: Update, context):
     if not update.message.contact:
         update.message.reply_text("❌ Please send your phone number using the button.")
@@ -2954,15 +2992,33 @@ def cl_handle_contact(update: Update, context):
         print("No contact received")
         update.message.reply_text("❌ Please use the button to send your contact.")
         return CHECKLIST_ASK_CONTACT
-    
+
     phone = normalize_number(update.message.contact.phone_number)
+
+    # Check if this is AOD019 admin
+    if normalize_number(AOD019_PHONE) == phone:
+        print(f"AOD019 admin detected: {phone}")
+        # Show AOD019 admin options: Filled or Fill
+        keyboard = [
+            [InlineKeyboardButton("✅ Filled (Skip to Ticket)", callback_data="checklist_filled")],
+            [InlineKeyboardButton("📝 Fill (Complete Checklist)", callback_data="checklist_fill")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        update.message.reply_text(
+            "🔑 AOD019 Admin Access - Choose an option:",
+            reply_markup=reply_markup
+        )
+        # Store phone for later use
+        context.user_data["aod019_phone"] = phone
+        return CHECKLIST_AOD019_OPTION
+
     emp_name, outlet_code = get_employee_info(phone)
-    
+
     if emp_name == "Unknown" or not outlet_code:
         print(f"Invalid employee info for phone {phone}")
         update.message.reply_text("❌ You're not rostered today or not registered.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-    
+
     context.user_data.update({"emp_name": emp_name, "outlet": outlet_code})
     print(f"Contact verified: emp_name={emp_name}, outlet_code={outlet_code}")
     
@@ -4230,6 +4286,7 @@ def setup_dispatcher():
             ASK_ACTION: [CallbackQueryHandler(action_selected)],
             ASK_PHONE: [MessageHandler(Filters.contact, handle_phone)],
             ASK_LOCATION: [MessageHandler(Filters.location, handle_location)],
+            CHECKLIST_AOD019_OPTION: [CallbackQueryHandler(aod019_checklist_option_handler)],
             CHECKLIST_ASK_CONTACT: [MessageHandler(Filters.contact, cl_handle_contact)],
             CHECKLIST_ASK_SLOT: [MessageHandler(Filters.text & ~Filters.command, cl_load_questions)],
             CHECKLIST_ASK_QUESTION: [MessageHandler(Filters.text & ~Filters.command, cl_handle_answer)],
