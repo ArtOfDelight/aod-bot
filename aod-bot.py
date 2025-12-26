@@ -3923,7 +3923,7 @@ def allowance_handle_contact(update: Update, context):
 def allowance_handle_trip_type(update: Update, context):
     """Handle trip type selection"""
     trip_text = update.message.text
-    
+
     if "Going" in trip_text or "TO" in trip_text:
         trip_type = "Going"
     elif "Coming" in trip_text or "FROM" in trip_text:
@@ -3933,35 +3933,51 @@ def allowance_handle_trip_type(update: Update, context):
     else:
         update.message.reply_text("❌ Please select a valid option.")
         return ALLOWANCE_ASK_TRIP_TYPE
-    
+
     context.user_data["trip_type"] = trip_type
+    context.user_data["screenshot_wait_start"] = datetime.datetime.now(INDIA_TZ)
     print(f"Trip type selected: {trip_type}")
-    
+
     if trip_type == "Blinkit":
         prompt_text = (
             f"✅ Trip Type: {trip_type}\n\n"
             f"📸 Please upload a screenshot of your Blinkit/Instamart order.\n"
             f"The bot will automatically extract:\n"
             f"• Total amount\n"
-            f"• Items ordered with prices"
+            f"• Items ordered with prices\n\n"
+            f"⏱️ You have 1 minute to upload. Use /reset to cancel."
         )
     else:
         prompt_text = (
             f"✅ Trip Type: {trip_type}\n\n"
             f"📸 Please upload a screenshot of your payment/allowance.\n"
-            f"The bot will automatically extract the amount from the image."
+            f"The bot will automatically extract the amount from the image.\n\n"
+            f"⏱️ You have 1 minute to upload. Use /reset to cancel."
         )
-    
+
     update.message.reply_text(prompt_text, reply_markup=ReplyKeyboardRemove())
     return ALLOWANCE_ASK_IMAGE
 
 def allowance_handle_image(update: Update, context):
     """Handle allowance image upload with AI-powered extraction"""
-    
+
+    # Check if 1 minute has passed since screenshot request
+    screenshot_wait_start = context.user_data.get("screenshot_wait_start")
+    if screenshot_wait_start:
+        elapsed_time = (datetime.datetime.now(INDIA_TZ) - screenshot_wait_start).total_seconds()
+        if elapsed_time > 60:  # 1 minute timeout
+            update.message.reply_text(
+                "⏱️ Time expired! The 1-minute window for uploading screenshot has passed.\n"
+                "Please use /start to begin again.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+
     if not update.message.photo:
         update.message.reply_text("❌ Please upload a photo/screenshot.")
         return ALLOWANCE_ASK_IMAGE
-    
+
     try:
         processing_msg = update.message.reply_text("⏳ Processing image...")
 
@@ -4200,6 +4216,7 @@ def cancel(update: Update, context):
     return ConversationHandler.END
 
 def reset(update: Update, context):
+    context.user_data.clear()
     update.message.reply_text("🔁 Reset successful. You can now use /start again.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
