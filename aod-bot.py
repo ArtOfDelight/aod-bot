@@ -51,6 +51,11 @@ CHECKLIST_REMINDER_GROUPS = {
     "HSR": -1003082789513
 }
 
+# === LATE SIGN-IN TRACKING ===
+late_signin_entries = []
+late_signin_lock = threading.Lock()
+last_daily_summary_date = None
+
 # === CONFIGURATION ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = "https://aod-bot-t2ux.onrender.com"
@@ -65,7 +70,8 @@ TRAVEL_SHEET_ID = "1FYXr8Wz0ddN3mFi-0AQbI6J_noi2glPbJLh44CEMUnE"  # Travel Allow
 POWER_STATUS_SHEET_ID = "1LWUBiFNKWXMKAGvUFfyoxFpR42LcRr2Zsl9JYgMIKPs"
 TAB_POWER_STATUS = "Form responses 1"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Add this after ALLOWANCE_SHEET_ID
-TAB_NAME_TRAVEL = "travel allowance bot"
+TAB_NAME_TRAVEL = "travel allowance bot" \
+""
 TAB_NAME_ROSTER = "Roster"
 TAB_NAME_OUTLETS = "Outlets"
 TAB_NAME_EMP_REGISTER = "EmployeeRegister"
@@ -376,6 +382,78 @@ def check_and_send_power_reminders():
                 
     except Exception as e:
         print(f"Error in check_and_send_power_reminders: {e}")
+
+def send_daily_late_signin_summary():
+    """Send daily summary of late sign-ins the next day"""
+    global last_daily_summary_date
+
+    try:
+        now = datetime.datetime.now(INDIA_TZ)
+        current_date = now.strftime("%Y-%m-%d")
+
+        # Check if we should send the summary (once per day at 9:00 AM)
+        if now.hour != 9 or now.minute != 0:
+            return
+
+        # Prevent duplicate sends on the same day
+        if last_daily_summary_date == current_date:
+            return
+
+        with late_signin_lock:
+            if not late_signin_entries:
+                print("No late sign-ins to report in daily summary")
+                return
+
+            # Get yesterday's date
+            yesterday = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+
+            # Filter entries from yesterday
+            yesterday_entries = [e for e in late_signin_entries if e["date"] == yesterday]
+
+            if not yesterday_entries:
+                print(f"No late sign-ins from {yesterday} to report")
+                return
+
+            # Build summary message
+            summary = f"📊 Late Sign-In Summary for {yesterday}\n"
+            summary += f"{'='*40}\n\n"
+            summary += f"Total Late Sign-Ins: {len(yesterday_entries)}\n\n"
+
+            # Group by outlet
+            outlets = {}
+            for entry in yesterday_entries:
+                outlet = entry["outlet"]
+                if outlet not in outlets:
+                    outlets[outlet] = []
+                outlets[outlet].append(entry)
+
+            # Add details for each outlet
+            for outlet, entries in sorted(outlets.items()):
+                summary += f"🏪 {outlet} ({len(entries)} late):\n"
+                for entry in sorted(entries, key=lambda x: x["delay_minutes"], reverse=True):
+                    summary += (
+                        f"  • {entry['employee']}\n"
+                        f"    Scheduled: {entry['scheduled_start']}\n"
+                        f"    Actual: {entry['signin_time']}\n"
+                        f"    Delay: {entry['delay_minutes']:.1f} minutes\n\n"
+                    )
+
+            # Send summary
+            try:
+                bot.send_message(chat_id=-4806089418, text=summary)
+                print(f"Sent daily late sign-in summary for {yesterday} ({len(yesterday_entries)} entries)")
+
+                # Remove yesterday's entries from the list
+                late_signin_entries[:] = [e for e in late_signin_entries if e["date"] != yesterday]
+
+                # Update last send date
+                last_daily_summary_date = current_date
+
+            except Exception as e:
+                print(f"Failed to send daily late sign-in summary: {e}")
+
+    except Exception as e:
+        print(f"Error in send_daily_late_signin_summary: {e}")
 
 def save_power_status(emp_id, emp_name, outlet, outlet_name, status, reason=""):
     """Save power status to Google Sheet"""
@@ -1226,18 +1304,21 @@ def send_signin_reminder(chat_id, emp_name, outlet, start_time):
 
 def reminder_worker():
     """Background worker that runs reminder checks every minute"""
-    print("Sign-in, checklist, and power status reminder service started")
+    print("Sign-in, checklist, power status, and late sign-in summary service started")
     while True:
         try:
             # Check sign-in reminders
             check_and_send_reminders()
-            
+
             # Check checklist reminders
             check_and_send_checklist_reminders()
-            
+
             # Check power status reminders
             check_and_send_power_reminders()
-            
+
+            # Check and send daily late sign-in summary (9:00 AM daily)
+            send_daily_late_signin_summary()
+
             time.sleep(60)  # Check every minute
         except Exception as e:
             print(f"Error in reminder_worker: {e}")
@@ -2926,19 +3007,19 @@ def handle_location(update: Update, context):
                     start_datetime = datetime.datetime.strptime(f"{today_str} {start_time_str}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo("Asia/Kolkata"))
                     grace_period_end = start_datetime + datetime.timedelta(minutes=15)
                     if now > grace_period_end:
-                        late_message = (
-                            f"⚠️ Late Sign-In Alert\n"
-                            f"Employee: {emp_name}\n"
-                            f"Outlet: {context.user_data['outlet_code']}\n"
-                            f"Scheduled Start: {start_time_str}\n"
-                            f"Sign-In Time: {timestamp}\n"
-                            f"Delay: {(now - start_datetime).total_seconds() / 60:.1f} minutes"
-                        )
-                        try:
-                            bot.send_message(chat_id=-4806089418, text=late_message)
-                            print(f"Sent late sign-in alert for {emp_name} to chat ID -4806089418")
-                        except Exception as e:
-                            print(f"Failed to send late sign-in alert: {e}")
+                        # Store late sign-in entry for daily summary
+                        delay_minutes = (now - start_datetime).total_seconds() / 60
+                        late_entry = {
+                            "employee": emp_name,
+                            "outlet": context.user_data['outlet_code'],
+                            "scheduled_start": start_time_str,
+                            "signin_time": timestamp,
+                            "delay_minutes": delay_minutes,
+                            "date": now.strftime("%Y-%m-%d")
+                        }
+                        with late_signin_lock:
+                            late_signin_entries.append(late_entry)
+                        print(f"Recorded late sign-in for {emp_name}: {delay_minutes:.1f} minutes late")
                 except ValueError as e:
                     print(f"Error parsing start time {start_time_str}: {e}")
                     bot.send_message(
@@ -3923,7 +4004,7 @@ def allowance_handle_contact(update: Update, context):
 def allowance_handle_trip_type(update: Update, context):
     """Handle trip type selection"""
     trip_text = update.message.text
-
+    
     if "Going" in trip_text or "TO" in trip_text:
         trip_type = "Going"
     elif "Coming" in trip_text or "FROM" in trip_text:
@@ -3933,51 +4014,35 @@ def allowance_handle_trip_type(update: Update, context):
     else:
         update.message.reply_text("❌ Please select a valid option.")
         return ALLOWANCE_ASK_TRIP_TYPE
-
+    
     context.user_data["trip_type"] = trip_type
-    context.user_data["screenshot_wait_start"] = datetime.datetime.now(INDIA_TZ)
     print(f"Trip type selected: {trip_type}")
-
+    
     if trip_type == "Blinkit":
         prompt_text = (
             f"✅ Trip Type: {trip_type}\n\n"
             f"📸 Please upload a screenshot of your Blinkit/Instamart order.\n"
             f"The bot will automatically extract:\n"
             f"• Total amount\n"
-            f"• Items ordered with prices\n\n"
-            f"⏱️ You have 1 minute to upload. Use /reset to cancel."
+            f"• Items ordered with prices"
         )
     else:
         prompt_text = (
             f"✅ Trip Type: {trip_type}\n\n"
             f"📸 Please upload a screenshot of your payment/allowance.\n"
-            f"The bot will automatically extract the amount from the image.\n\n"
-            f"⏱️ You have 1 minute to upload. Use /reset to cancel."
+            f"The bot will automatically extract the amount from the image."
         )
-
+    
     update.message.reply_text(prompt_text, reply_markup=ReplyKeyboardRemove())
     return ALLOWANCE_ASK_IMAGE
 
 def allowance_handle_image(update: Update, context):
     """Handle allowance image upload with AI-powered extraction"""
-
-    # Check if 1 minute has passed since screenshot request
-    screenshot_wait_start = context.user_data.get("screenshot_wait_start")
-    if screenshot_wait_start:
-        elapsed_time = (datetime.datetime.now(INDIA_TZ) - screenshot_wait_start).total_seconds()
-        if elapsed_time > 60:  # 1 minute timeout
-            update.message.reply_text(
-                "⏱️ Time expired! The 1-minute window for uploading screenshot has passed.\n"
-                "Please use /start to begin again.",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            context.user_data.clear()
-            return ConversationHandler.END
-
+    
     if not update.message.photo:
         update.message.reply_text("❌ Please upload a photo/screenshot.")
         return ALLOWANCE_ASK_IMAGE
-
+    
     try:
         processing_msg = update.message.reply_text("⏳ Processing image...")
 
@@ -4216,7 +4281,6 @@ def cancel(update: Update, context):
     return ConversationHandler.END
 
 def reset(update: Update, context):
-    context.user_data.clear()
     update.message.reply_text("🔁 Reset successful. You can now use /start again.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
@@ -4265,6 +4329,63 @@ def reminder_status_cmd(update: Update, context):
         message.append("No checklist reminders have been sent yet today.")
     
     update.message.reply_text('\n'.join(message))
+
+def test_late_signin_summary(update: Update, context):
+    """Manual command to test late sign-in daily summary"""
+    try:
+        now = datetime.datetime.now(INDIA_TZ)
+
+        with late_signin_lock:
+            if not late_signin_entries:
+                update.message.reply_text("ℹ️ No late sign-in entries to summarize. Try signing in late first to test!")
+                return
+
+            # Get yesterday's date (or use today for testing)
+            yesterday = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+            today = now.strftime("%Y-%m-%d")
+
+            # Filter entries from yesterday or today
+            test_entries = [e for e in late_signin_entries if e["date"] in [yesterday, today]]
+
+            if not test_entries:
+                update.message.reply_text(f"ℹ️ No late sign-ins from today or yesterday. Total entries: {len(late_signin_entries)}")
+                return
+
+            # Use today's date for the summary header in test mode
+            summary_date = today if any(e["date"] == today for e in test_entries) else yesterday
+
+            # Build summary message
+            summary = f"📊 Late Sign-In Summary for {summary_date} (TEST)\n"
+            summary += f"{'='*40}\n\n"
+            summary += f"Total Late Sign-Ins: {len(test_entries)}\n\n"
+
+            # Group by outlet
+            outlets = {}
+            for entry in test_entries:
+                outlet = entry["outlet"]
+                if outlet not in outlets:
+                    outlets[outlet] = []
+                outlets[outlet].append(entry)
+
+            # Add details for each outlet
+            for outlet, entries in sorted(outlets.items()):
+                summary += f"🏪 {outlet} ({len(entries)} late):\n"
+                for entry in sorted(entries, key=lambda x: x["delay_minutes"], reverse=True):
+                    summary += (
+                        f"  • {entry['employee']}\n"
+                        f"    Scheduled: {entry['scheduled_start']}\n"
+                        f"    Actual: {entry['signin_time']}\n"
+                        f"    Delay: {entry['delay_minutes']:.1f} minutes\n\n"
+                    )
+
+            # Send summary
+            bot.send_message(chat_id=-4806089418, text=summary)
+            update.message.reply_text(f"✅ Test summary sent! ({len(test_entries)} entries)")
+            print(f"Sent TEST late sign-in summary for {summary_date} ({len(test_entries)} entries)")
+
+    except Exception as e:
+        update.message.reply_text(f"❌ Error sending test summary: {e}")
+        print(f"Error in test_late_signin_summary: {e}")
 
 # === Dispatcher & Webhook ===
 @app.route(WEBHOOK_PATH, methods=["POST"])
@@ -4349,6 +4470,7 @@ def setup_dispatcher():
     dispatcher.add_handler(CommandHandler("testchecklistreminders", test_checklist_reminders))
     dispatcher.add_handler(CommandHandler("testchecklistreminder", send_test_checklist_reminder))
     dispatcher.add_handler(CommandHandler("reminderstatus", reminder_status_cmd))
+    dispatcher.add_handler(CommandHandler("testlatesignin", test_late_signin_summary))
 
     # Set bot commands menu
     try:
