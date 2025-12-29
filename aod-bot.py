@@ -4484,7 +4484,8 @@ def setup_dispatcher():
             ("testreminders", "Test sign-in reminder system (admin only)"),
             ("testchecklistreminders", "Test checklist reminder system (admin only)"),
             ("testchecklistreminder", "Send test checklist reminder (admin only)"),
-            ("reminderstatus", "Show current reminder status (admin only)")
+            ("reminderstatus", "Show current reminder status (admin only)"),
+            ("testlatesignin", "Test late sign-in daily summary (admin only)")
         ])
         print("Bot commands set successfully.")
     except Exception as e:
