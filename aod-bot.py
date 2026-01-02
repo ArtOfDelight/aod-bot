@@ -3061,8 +3061,8 @@ def get_available_time_slots():
     
     # Define time ranges for each slot
     morning_start = datetime.time(9, 0)   # 9:00 AM
-    morning_end = datetime.time(13, 0)    # 1:00 PM
-    
+    morning_end = datetime.time(15, 0)    # 3:00 PM (extended from 1 PM)
+
     midday_start = datetime.time(16, 0)   # 4:00 PM
     midday_end = datetime.time(19, 0)     # 7:00 PM
     
