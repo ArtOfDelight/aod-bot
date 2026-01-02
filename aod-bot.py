@@ -70,8 +70,7 @@ TRAVEL_SHEET_ID = "1FYXr8Wz0ddN3mFi-0AQbI6J_noi2glPbJLh44CEMUnE"  # Travel Allow
 POWER_STATUS_SHEET_ID = "1LWUBiFNKWXMKAGvUFfyoxFpR42LcRr2Zsl9JYgMIKPs"
 TAB_POWER_STATUS = "Form responses 1"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Add this after ALLOWANCE_SHEET_ID
-TAB_NAME_TRAVEL = "travel allowance bot" \
-""
+TAB_NAME_TRAVEL = "travel allowance bot"
 TAB_NAME_ROSTER = "Roster"
 TAB_NAME_OUTLETS = "Outlets"
 TAB_NAME_EMP_REGISTER = "EmployeeRegister"
@@ -4127,8 +4126,8 @@ def allowance_handle_image(update: Update, context):
                 processing_msg.edit_text("\n".join(confirmation))
             else:
                 processing_msg.edit_text("❌ Error saving to sheet. Please try again or contact admin.")
-                return ALLOWANCE_ASK_IMAGE
-        
+                return ConversationHandler.END
+
         else:
             # Travel allowance (Going/Coming) - Use AI WITH validation
             processing_msg.edit_text("⏳ Extracting amount from image...")
@@ -4220,8 +4219,8 @@ def allowance_handle_image(update: Update, context):
                 processing_msg.edit_text("\n".join(confirmation))
             else:
                 processing_msg.edit_text("❌ Error saving to sheet. Please try again or contact admin.")
-                return ALLOWANCE_ASK_IMAGE
-        
+                return ConversationHandler.END
+
         return ConversationHandler.END
         
     except Exception as e:
@@ -4229,7 +4228,7 @@ def allowance_handle_image(update: Update, context):
         import traceback
         traceback.print_exc()
         update.message.reply_text("❌ Error processing image. Please try again or contact admin.")
-        return ALLOWANCE_ASK_IMAGE
+        return ConversationHandler.END
     
 def cleanup_file_safely(file_path):
     """Safely delete a file with multiple attempts and proper error handling"""
