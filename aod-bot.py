@@ -1947,29 +1947,29 @@ def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount):
         sheet = client.open_by_key(TRAVEL_SHEET_ID).worksheet(TAB_NAME_TRAVEL)
 
         # Verify and clean headers
-        headers = sheet.row_values(1)
         expected_headers = ["Travel ID", "Date", "Employee ID", "Outlet", "Going Amount", "Coming Amount"]
 
-        # Clean up: set only the expected headers and clear any extra columns
+        # Set headers (this will also overwrite any existing headers)
         sheet.update('A1:F1', [expected_headers])
-        # Clear any headers beyond column F to avoid empty cell issues
-        if len(headers) > 6:
-            # Clear columns G onwards in the header row
-            sheet.update(f'G1:Z1', [['']*20])
 
         current_date = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d")
 
         # Check if there's already a row for this employee on this date
-        # Only read the first 6 columns to avoid empty header cell issues
-        all_records = sheet.get_all_records(head=1, expected_headers=expected_headers)
+        # Use get_all_values() and manually parse to avoid empty header cell issues
+        all_values = sheet.get_all_values()
         existing_row_index = None
-        
-        for idx, record in enumerate(all_records, start=2):  # start=2 because row 1 is headers
-            if (str(record.get("Date", "")).strip() == current_date and 
-                str(record.get("Employee ID", "")).strip() == emp_id):
-                existing_row_index = idx
-                print(f"Found existing row at index {idx} for Employee ID {emp_id} on {current_date}")
-                break
+
+        # Skip header row (row 0) and check data rows
+        for idx, row_values in enumerate(all_values[1:], start=2):  # start=2 because row 1 is headers
+            # Only read first 6 columns to match our expected headers
+            if len(row_values) >= 3:  # Need at least Date and Employee ID
+                date_val = str(row_values[1]).strip() if len(row_values) > 1 else ""  # Column B (Date)
+                emp_id_val = str(row_values[2]).strip() if len(row_values) > 2 else ""  # Column C (Employee ID)
+
+                if date_val == current_date and emp_id_val == emp_id:
+                    existing_row_index = idx
+                    print(f"Found existing row at index {idx} for Employee ID {emp_id} on {current_date}")
+                    break
         
         if existing_row_index:
             # Update existing row
