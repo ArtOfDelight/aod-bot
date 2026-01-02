@@ -1942,7 +1942,7 @@ If you cannot extract the locations, return:
         return None
 
 def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount):
-    """Save travel allowance (Going/Coming) to Travel Allowance sheet"""
+    """Save travel allowance (Going/Coming) to Travel Allowance sheet - Always creates new row"""
     try:
         sheet = client.open_by_key(TRAVEL_SHEET_ID).worksheet(TAB_NAME_TRAVEL)
 
@@ -1952,56 +1952,30 @@ def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount):
         # Set headers (this will also overwrite any existing headers)
         sheet.update('A1:F1', [expected_headers])
 
-        current_date = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d")
+        # Get current date and time for unique ID
+        now = datetime.datetime.now(INDIA_TZ)
+        current_date = now.strftime("%Y-%m-%d")
+        timestamp = now.strftime("%H%M%S")
 
-        # Check if there's already a row for this employee on this date
-        # Use get_all_values() and manually parse to avoid empty header cell issues
-        all_values = sheet.get_all_values()
-        existing_row_index = None
+        # Always create new row (allow multiple entries per day)
+        # Generate unique Travel ID with timestamp
+        travel_id = f"TRV-{current_date}-{emp_id}-{timestamp}"
 
-        # Skip header row (row 0) and check data rows
-        for idx, row_values in enumerate(all_values[1:], start=2):  # start=2 because row 1 is headers
-            # Only read first 6 columns to match our expected headers
-            if len(row_values) >= 3:  # Need at least Date and Employee ID
-                date_val = str(row_values[1]).strip() if len(row_values) > 1 else ""  # Column B (Date)
-                emp_id_val = str(row_values[2]).strip() if len(row_values) > 2 else ""  # Column C (Employee ID)
+        going_amount = amount if trip_type == "Going" else ""
+        coming_amount = amount if trip_type == "Coming" else ""
 
-                if date_val == current_date and emp_id_val == emp_id:
-                    existing_row_index = idx
-                    print(f"Found existing row at index {idx} for Employee ID {emp_id} on {current_date}")
-                    break
-        
-        if existing_row_index:
-            # Update existing row
-            if trip_type == "Going":
-                col = "E"  # Going Amount column
-            else:  # Coming
-                col = "F"  # Coming Amount column
-            
-            cell_address = f"{col}{existing_row_index}"
-            sheet.update(cell_address, [[amount]])
-            print(f"Updated {trip_type} amount (₹{amount}) in cell {cell_address}")
-            
-        else:
-            # Create new row
-            # Generate Travel ID (you can customize this format)
-            travel_id = f"TRV-{current_date}-{emp_id}"
-            
-            going_amount = amount if trip_type == "Going" else ""
-            coming_amount = amount if trip_type == "Coming" else ""
-            
-            row_data = [
-                travel_id,
-                current_date,
-                emp_id,  # Changed from emp_name to emp_id
-                outlet,
-                going_amount,
-                coming_amount
-            ]
-            
-            sheet.append_row(row_data)
-            print(f"Created new travel row: {travel_id} - Employee ID {emp_id} - {trip_type}: ₹{amount}")
-        
+        row_data = [
+            travel_id,
+            current_date,
+            emp_id,
+            outlet,
+            going_amount,
+            coming_amount
+        ]
+
+        sheet.append_row(row_data)
+        print(f"Created new travel row: {travel_id} - Employee ID {emp_id} - {trip_type}: ₹{amount}")
+
         return True
         
     except Exception as e:
