@@ -1942,7 +1942,10 @@ If you cannot extract the locations, return:
         return None
 
 def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount):
-    """Save travel allowance (Going/Coming) to Travel Allowance sheet - Always creates new row"""
+    """Save travel allowance (Going/Coming) to Travel Allowance sheet
+    - Going and Coming for same trip go in same row
+    - Multiple trips create multiple rows
+    """
     try:
         sheet = client.open_by_key(TRAVEL_SHEET_ID).worksheet(TAB_NAME_TRAVEL)
 
@@ -1952,29 +1955,65 @@ def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount):
         # Set headers (this will also overwrite any existing headers)
         sheet.update('A1:F1', [expected_headers])
 
-        # Get current date and time for unique ID
+        # Get current date and time
         now = datetime.datetime.now(INDIA_TZ)
         current_date = now.strftime("%Y-%m-%d")
         timestamp = now.strftime("%H%M%S")
 
-        # Always create new row (allow multiple entries per day)
-        # Generate unique Travel ID with timestamp
-        travel_id = f"TRV-{current_date}-{emp_id}-{timestamp}"
+        # Get all values to check for existing rows
+        all_values = sheet.get_all_values()
 
-        going_amount = amount if trip_type == "Going" else ""
-        coming_amount = amount if trip_type == "Coming" else ""
+        # Find the FIRST row for this employee/date where the trip_type column is empty
+        # This ensures consecutive uploads fill in order (Going1, Going2, Coming1→fills Row1, Coming2→fills Row2)
+        target_row_index = None
 
-        row_data = [
-            travel_id,
-            current_date,
-            emp_id,
-            outlet,
-            going_amount,
-            coming_amount
-        ]
+        for idx, row_values in enumerate(all_values[1:], start=2):  # start=2 because row 1 is headers
+            if len(row_values) >= 3:
+                date_val = str(row_values[1]).strip() if len(row_values) > 1 else ""  # Column B (Date)
+                emp_id_val = str(row_values[2]).strip() if len(row_values) > 2 else ""  # Column C (Employee ID)
 
-        sheet.append_row(row_data)
-        print(f"Created new travel row: {travel_id} - Employee ID {emp_id} - {trip_type}: ₹{amount}")
+                if date_val == current_date and emp_id_val == emp_id:
+                    # Found a row for this employee on this date
+                    # Check if the trip_type column is empty
+                    if trip_type == "Going":
+                        going_val = str(row_values[4]).strip() if len(row_values) > 4 else ""  # Column E
+                        if not going_val:  # Going column is empty - use this row
+                            target_row_index = idx
+                            break  # Take the FIRST empty slot
+                    else:  # Coming
+                        coming_val = str(row_values[5]).strip() if len(row_values) > 5 else ""  # Column F
+                        if not coming_val:  # Coming column is empty - use this row
+                            target_row_index = idx
+                            break  # Take the FIRST empty slot
+
+        if target_row_index:
+            # Update existing row with empty slot
+            if trip_type == "Going":
+                col = "E"  # Going Amount column
+            else:  # Coming
+                col = "F"  # Coming Amount column
+
+            cell_address = f"{col}{target_row_index}"
+            sheet.update(cell_address, [[amount]])
+            print(f"Updated existing row {target_row_index}: {trip_type} = ₹{amount}")
+        else:
+            # Create new row (no empty slot found)
+            travel_id = f"TRV-{current_date}-{emp_id}-{timestamp}"
+
+            going_amount = amount if trip_type == "Going" else ""
+            coming_amount = amount if trip_type == "Coming" else ""
+
+            row_data = [
+                travel_id,
+                current_date,
+                emp_id,
+                outlet,
+                going_amount,
+                coming_amount
+            ]
+
+            sheet.append_row(row_data)
+            print(f"Created new travel row: {travel_id} - {trip_type}: ₹{amount}")
 
         return True
         
