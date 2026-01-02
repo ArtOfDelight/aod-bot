@@ -1945,19 +1945,23 @@ def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount):
     """Save travel allowance (Going/Coming) to Travel Allowance sheet"""
     try:
         sheet = client.open_by_key(TRAVEL_SHEET_ID).worksheet(TAB_NAME_TRAVEL)
-        
-        # Verify headers
+
+        # Verify and clean headers
         headers = sheet.row_values(1)
         expected_headers = ["Travel ID", "Date", "Employee ID", "Outlet", "Going Amount", "Coming Amount"]
-        
-        if not headers or headers != expected_headers:
-            print("Setting up Travel Allowance sheet headers")
-            sheet.update('A1:F1', [expected_headers])
-        
+
+        # Clean up: set only the expected headers and clear any extra columns
+        sheet.update('A1:F1', [expected_headers])
+        # Clear any headers beyond column F to avoid empty cell issues
+        if len(headers) > 6:
+            # Clear columns G onwards in the header row
+            sheet.update(f'G1:Z1', [['']*20])
+
         current_date = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d")
-        
+
         # Check if there's already a row for this employee on this date
-        all_records = sheet.get_all_records()
+        # Only read the first 6 columns to avoid empty header cell issues
+        all_records = sheet.get_all_records(head=1, expected_headers=expected_headers)
         existing_row_index = None
         
         for idx, record in enumerate(all_records, start=2):  # start=2 because row 1 is headers
