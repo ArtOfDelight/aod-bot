@@ -231,7 +231,6 @@ CHECKLIST_AOD019_OPTION = 15  # AOD019 admin option to skip or fill checklist
 TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_SUBTYPE, TICKET_ASK_ISSUE = range(20, 24)
 ALLOWANCE_ASK_CONTACT, ALLOWANCE_ASK_TRIP_TYPE, ALLOWANCE_ASK_IMAGE = range(30, 33)
 POWER_ASK_CONTACT, POWER_ASK_STATUS = range(40, 42)
-CHECKLIST_STATUS_ASK_DATE = 210
 KITCHEN_ASK_CONTACT = 100
 KITCHEN_ASK_ACTION = 101
 KITCHEN_ASK_ACTIVITY = 102 # Added TICKET_ASK_SUBTYPE
@@ -2281,242 +2280,6 @@ def getroster(update: Update, context):
         update.message.reply_text(f"Error generating roster: {e}")
         print(f"Error sending roster: {e}")
 
-def checklist_status_start(update: Update, context):
-    """Start checklist status command - Ask for date"""
-    try:
-        # Generate date options
-        today = datetime.datetime.now(INDIA_TZ)
-        dates = []
-        date_labels = []
-
-        # Add "Today"
-        dates.append(today.strftime("%d/%m/%Y"))
-        date_labels.append("📅 Today")
-
-        # Add last 6 days
-        for i in range(1, 7):
-            past_date = today - datetime.timedelta(days=i)
-            dates.append(past_date.strftime("%d/%m/%Y"))
-            if i == 1:
-                date_labels.append("📅 Yesterday")
-            else:
-                date_labels.append(f"📅 {past_date.strftime('%d %b %Y')}")
-
-        # Store dates in context
-        context.user_data['checklist_status_dates'] = dates
-
-        # Create keyboard with date options
-        keyboard = []
-        for label in date_labels:
-            keyboard.append([KeyboardButton(label)])
-        keyboard.append([KeyboardButton("❌ Cancel")])
-
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-        update.message.reply_text(
-            "📋 *Checklist Completion Status*\n\n"
-            "Please select a date to view checklist status:",
-            parse_mode='Markdown',
-            reply_markup=reply_markup
-        )
-
-        return CHECKLIST_STATUS_ASK_DATE
-
-    except Exception as e:
-        print(f"Error in checklist_status_start: {e}")
-        import traceback
-        traceback.print_exc()
-        update.message.reply_text(
-            "❌ Error starting checklist status view. Please try again.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return ConversationHandler.END
-
-def checklist_status_handle_date(update: Update, context):
-    """Handle date selection and show checklist status"""
-    try:
-        selected_text = update.message.text.strip()
-
-        # Handle cancel
-        if selected_text == "❌ Cancel":
-            update.message.reply_text(
-                "❌ Checklist status view cancelled.",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            return ConversationHandler.END
-
-        # Extract date index from selection
-        dates = context.user_data.get('checklist_status_dates', [])
-
-        # Map selection to date
-        date_map = {
-            "📅 Today": 0,
-            "📅 Yesterday": 1,
-        }
-
-        selected_date = None
-        if selected_text in date_map:
-            selected_date = dates[date_map[selected_text]]
-        else:
-            # Try to match other date formats
-            for i, date in enumerate(dates):
-                date_obj = datetime.datetime.strptime(date, "%d/%m/%Y")
-                if selected_text == f"📅 {date_obj.strftime('%d %b %Y')}":
-                    selected_date = date
-                    break
-
-        if not selected_date:
-            update.message.reply_text(
-                "❌ Invalid date selection. Please try again.",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            return ConversationHandler.END
-
-        # Send loading message
-        progress_msg = update.message.reply_text(
-            f"⏳ Fetching checklist completion status for {selected_date}...",
-            reply_markup=ReplyKeyboardRemove()
-        )
-
-        # Fetch data from API with date parameter
-        response = requests.get(
-            "https://restaurant-dashboard-nqbi.onrender.com/api/checklist-completion-status",
-            params={"date": selected_date},
-            timeout=30
-        )
-        response.raise_for_status()
-
-        data = response.json()
-
-        if not data.get("success"):
-            update.message.reply_text("❌ Failed to fetch checklist status data.")
-            return ConversationHandler.END
-
-        outlets = data.get("data", [])
-
-        if not outlets:
-            update.message.reply_text(f"📋 No checklist data available for {selected_date}.")
-            return ConversationHandler.END
-
-        # Format the message
-        message_parts = ["```"]
-        message_parts.append(f"📋 *Checklist Status - {selected_date}*")
-        message_parts.append("")
-
-        for outlet in outlets:
-            outlet_name = outlet.get("outletName", "Unknown")
-            outlet_code = outlet.get("outletCode", "N/A")
-            overall_status = outlet.get("overallStatus", "Unknown")
-            completion_pct = outlet.get("completionPercentage", 0)
-            total_employees = outlet.get("totalScheduledEmployees", 0)
-            last_submission = outlet.get("lastSubmissionTime", "")
-
-            # Status emoji
-            status_emoji = "✅" if overall_status == "Completed" else "🟡" if overall_status == "Partial" else "❌"
-
-            message_parts.append(f"{status_emoji} *{outlet_name} ({outlet_code})*")
-            message_parts.append(f"Overall: {overall_status} ({completion_pct}%)")
-            message_parts.append(f"Scheduled Employees: {total_employees}")
-
-            # Time slot details
-            time_slots = outlet.get("timeSlotStatus", [])
-            if time_slots:
-                message_parts.append("Time Slots:")
-                for slot in time_slots:
-                    slot_name = slot.get("timeSlot", "Unknown")
-                    slot_status = slot.get("status", "Unknown")
-                    employee_count = slot.get("employeeCount", 0)
-                    slot_emoji = "✅" if slot_status == "Completed" else "❌"
-
-                    slot_line = f"  {slot_emoji} {slot_name}: {slot_status}"
-                    if slot_status == "Completed":
-                        submitted_by = slot.get("submittedBy", "Unknown")
-                        timestamp = slot.get("timestamp", "")
-                        slot_line += f"\n     By: {submitted_by}"
-                        if timestamp:
-                            slot_line += f"\n     At: {timestamp}"
-                    slot_line += f"\n     Employees: {employee_count}"
-                    message_parts.append(slot_line)
-
-            if last_submission:
-                message_parts.append(f"Last Submission: {last_submission}")
-
-            message_parts.append("")
-
-        # Remove last empty line
-        if message_parts[-1] == "":
-            message_parts.pop()
-
-        message_parts.append("```")
-
-        # Send the formatted message
-        full_message = "\n".join(message_parts)
-
-        # Telegram has a 4096 character limit, so split if needed
-        if len(full_message) > 4000:
-            # Delete the progress message first
-            try:
-                progress_msg.delete()
-            except:
-                pass
-
-            # Split by outlet
-            current_msg = ["```", f"📋 *Checklist Status - {selected_date}*", ""]
-            message_sent = False
-
-            for outlet in outlets:
-                outlet_name = outlet.get("outletName", "Unknown")
-                outlet_code = outlet.get("outletCode", "N/A")
-                overall_status = outlet.get("overallStatus", "Unknown")
-                completion_pct = outlet.get("completionPercentage", 0)
-                status_emoji = "✅" if overall_status == "Completed" else "🟡" if overall_status == "Partial" else "❌"
-
-                outlet_info = f"{status_emoji} *{outlet_name} ({outlet_code})*: {overall_status} ({completion_pct}%)"
-
-                # If adding this outlet would exceed limit, send current message
-                if len("\n".join(current_msg)) + len(outlet_info) > 3900:
-                    current_msg.append("```")
-                    update.message.reply_text("\n".join(current_msg), parse_mode="Markdown")
-                    message_sent = True
-                    # Start new message
-                    current_msg = ["```"]
-
-                current_msg.append(outlet_info)
-
-            current_msg.append("```")
-            update.message.reply_text("\n".join(current_msg), parse_mode="Markdown")
-        else:
-            try:
-                progress_msg.edit_text(full_message, parse_mode="Markdown")
-            except BadRequest as e:
-                # If message can't be edited (too old, already deleted, etc.), send a new one
-                print(f"Could not edit message: {e}. Sending new message instead.")
-                try:
-                    progress_msg.delete()
-                except:
-                    pass
-                update.message.reply_text(full_message, parse_mode="Markdown")
-
-        print(f"Checklist completion status sent successfully for {selected_date}")
-        return ConversationHandler.END
-
-    except requests.exceptions.RequestException as e:
-        update.message.reply_text(
-            f"❌ Network error: Could not fetch data from server.\n{str(e)}",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        print(f"Error fetching checklist completion status: {e}")
-        return ConversationHandler.END
-    except Exception as e:
-        update.message.reply_text(
-            f"❌ Error generating checklist status: {e}",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        print(f"Error sending checklist status: {e}")
-        import traceback
-        traceback.print_exc()
-        return ConversationHandler.END
-
 def checklist_completion_status(update: Update, context):
     """Show checklist completion status for all outlets"""
     try:
@@ -4300,109 +4063,6 @@ def reset(update: Update, context):
     update.message.reply_text("🔁 Reset successful. You can now use /start again.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# === Manual Testing Commands ===
-def test_reminders(update: Update, context):
-    """Manual command to test sign-in reminder system"""
-    check_and_send_reminders()
-    update.message.reply_text("✅ Sign-in reminder check completed. Check logs for details.")
-
-def test_checklist_reminders(update: Update, context):
-    """Manual command to test checklist reminder system"""
-    check_and_send_checklist_reminders()
-    update.message.reply_text("✅ Checklist reminder check completed. Check logs for details.")
-
-def send_test_checklist_reminder(update: Update, context):
-    """Manual command to send test checklist reminders"""
-    args = context.args
-    if not args:
-        update.message.reply_text("Usage: /testchecklistreminder <Morning|Mid Day|Closing>")
-        return
-    
-    slot = ' '.join(args)
-    if slot not in ["Morning", "Mid Day", "Closing"]:
-        update.message.reply_text("❌ Invalid slot. Use: Morning, Mid Day, or Closing")
-        return
-    
-    send_checklist_reminder_to_groups(slot)
-    update.message.reply_text(f"✅ Test {slot} checklist reminders sent to all groups.")
-
-def reminder_status_cmd(update: Update, context):
-    """Show current reminder status"""
-    message = ["📊 Sign-In Reminder Status:\n"]
-    if reminder_status:
-        for emp_id, status in reminder_status.items():
-            last_reminder = status['last_reminder'].strftime('%H:%M:%S') if status.get('last_reminder') else 'Never'
-            reminders_sent = status.get('reminders_sent', 0)
-            message.append(f"Employee {emp_id}: {reminders_sent} reminders, last at {last_reminder}")
-    else:
-        message.append("No sign-in reminders have been sent yet today.")
-    
-    message.append(f"\n📋 Checklist Reminder Status:")
-    if checklist_reminder_status:
-        for reminder_key, last_sent in checklist_reminder_status.items():
-            message.append(f"{reminder_key}: last sent at {last_sent.strftime('%Y-%m-%d %H:%M:%S')}")
-    else:
-        message.append("No checklist reminders have been sent yet today.")
-    
-    update.message.reply_text('\n'.join(message))
-
-def test_late_signin_summary(update: Update, context):
-    """Manual command to test late sign-in daily summary"""
-    try:
-        now = datetime.datetime.now(INDIA_TZ)
-
-        with late_signin_lock:
-            if not late_signin_entries:
-                update.message.reply_text("ℹ️ No late sign-in entries to summarize. Try signing in late first to test!")
-                return
-
-            # Get yesterday's date (or use today for testing)
-            yesterday = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-            today = now.strftime("%Y-%m-%d")
-
-            # Filter entries from yesterday or today
-            test_entries = [e for e in late_signin_entries if e["date"] in [yesterday, today]]
-
-            if not test_entries:
-                update.message.reply_text(f"ℹ️ No late sign-ins from today or yesterday. Total entries: {len(late_signin_entries)}")
-                return
-
-            # Use today's date for the summary header in test mode
-            summary_date = today if any(e["date"] == today for e in test_entries) else yesterday
-
-            # Build summary message
-            summary = f"📊 Late Sign-In Summary for {summary_date} (TEST)\n"
-            summary += f"{'='*40}\n\n"
-            summary += f"Total Late Sign-Ins: {len(test_entries)}\n\n"
-
-            # Group by outlet
-            outlets = {}
-            for entry in test_entries:
-                outlet = entry["outlet"]
-                if outlet not in outlets:
-                    outlets[outlet] = []
-                outlets[outlet].append(entry)
-
-            # Add details for each outlet
-            for outlet, entries in sorted(outlets.items()):
-                summary += f"🏪 {outlet} ({len(entries)} late):\n"
-                for entry in sorted(entries, key=lambda x: x["delay_minutes"], reverse=True):
-                    summary += (
-                        f"  • {entry['employee']}\n"
-                        f"    Scheduled: {entry['scheduled_start']}\n"
-                        f"    Actual: {entry['signin_time']}\n"
-                        f"    Delay: {entry['delay_minutes']:.1f} minutes\n\n"
-                    )
-
-            # Send summary
-            bot.send_message(chat_id=-4806089418, text=summary)
-            update.message.reply_text(f"✅ Test summary sent! ({len(test_entries)} entries)")
-            print(f"Sent TEST late sign-in summary for {summary_date} ({len(test_entries)} entries)")
-
-    except Exception as e:
-        update.message.reply_text(f"❌ Error sending test summary: {e}")
-        print(f"Error in test_late_signin_summary: {e}")
-
 # === Dispatcher & Webhook ===
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
@@ -4466,42 +4126,20 @@ def setup_dispatcher():
         ]
     ))
 
-    # Checklist Status conversation handler
-    dispatcher.add_handler(ConversationHandler(
-        entry_points=[CommandHandler("checkliststatus", checklist_status_start)],
-        states={
-            CHECKLIST_STATUS_ASK_DATE: [MessageHandler(Filters.text & ~Filters.command, checklist_status_handle_date)],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-        ]
-    ))
-
     # Standalone command handlers
     dispatcher.add_handler(CommandHandler("reset", reset))
     dispatcher.add_handler(CommandHandler("statustoday", statustoday))
     dispatcher.add_handler(CommandHandler("statusyesterday", statusyesterday))
     dispatcher.add_handler(CommandHandler("getroster", getroster))
-    dispatcher.add_handler(CommandHandler("testreminders", test_reminders))
-    dispatcher.add_handler(CommandHandler("testchecklistreminders", test_checklist_reminders))
-    dispatcher.add_handler(CommandHandler("testchecklistreminder", send_test_checklist_reminder))
-    dispatcher.add_handler(CommandHandler("reminderstatus", reminder_status_cmd))
-    dispatcher.add_handler(CommandHandler("testlatesignin", test_late_signin_summary))
 
     # Set bot commands menu
     try:
         bot.set_my_commands([
             ("start", "Start the bot and access main menu"),
             ("reset", "Reset the current conversation"),
-            ("checkliststatus", "Show checklist completion status for all outlets"),
             ("statustoday", "Show today's sign-in status report"),
             ("statusyesterday", "Show yesterday's full attendance report"),
-            ("getroster", "Show today's roster for all outlets"),
-            ("testreminders", "Test sign-in reminder system (admin only)"),
-            ("testchecklistreminders", "Test checklist reminder system (admin only)"),
-            ("testchecklistreminder", "Send test checklist reminder (admin only)"),
-            ("reminderstatus", "Show current reminder status (admin only)"),
-            ("testlatesignin", "Test late sign-in daily summary (admin only)")
+            ("getroster", "Show today's roster for all outlets")
         ])
         print("Bot commands set successfully.")
     except Exception as e:
