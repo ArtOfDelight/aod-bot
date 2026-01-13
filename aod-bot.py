@@ -228,6 +228,7 @@ drive = setup_drive()
 ASK_ACTION, ASK_PHONE, ASK_LOCATION = range(3)
 CHECKLIST_ASK_CONTACT, CHECKLIST_ASK_SLOT, CHECKLIST_ASK_QUESTION, CHECKLIST_ASK_IMAGE, CHECKLIST_OFFER_TICKET = range(10, 15)
 CHECKLIST_AOD019_OPTION = 15  # AOD019 admin option to skip or fill checklist
+CHECKLIST_ADMIN_ASK_OUTLET = 16  # Admin outlet selection
 TICKET_ASK_CONTACT, TICKET_ASK_TYPE, TICKET_ASK_SUBTYPE, TICKET_ASK_ISSUE = range(20, 24)
 ALLOWANCE_ASK_CONTACT, ALLOWANCE_ASK_TRIP_TYPE, ALLOWANCE_ASK_IMAGE = range(30, 33)
 POWER_ASK_CONTACT, POWER_ASK_STATUS = range(40, 42)
@@ -2733,11 +2734,37 @@ def aod019_checklist_option_handler(update: Update, context):
         return TICKET_ASK_TYPE
 
     elif query.data == "checklist_fill":
-        # Proceed with normal checklist flow
-        contact_button = KeyboardButton("📱 Send Phone Number", request_contact=True)
-        markup = ReplyKeyboardMarkup([[contact_button]], one_time_keyboard=True, resize_keyboard=True)
-        query.message.reply_text("Please verify your phone number for the checklist:", reply_markup=markup)
-        return CHECKLIST_ASK_CONTACT
+        # Admin wants to fill checklist - ask for outlet selection
+        print("Admin selected to fill checklist")
+        context.user_data["emp_name"] = "AOD019_Admin"
+        context.user_data["is_admin_filling"] = True
+
+        try:
+            # Get all available outlets
+            outlets_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_OUTLETS)
+            outlets_records = outlets_sheet.get_all_records()
+            outlet_codes = [str(row.get("Outlet Code", "")).strip() for row in outlets_records if row.get("Outlet Code")]
+
+            if not outlet_codes:
+                query.message.reply_text("❌ No outlets found in system.", reply_markup=ReplyKeyboardRemove())
+                return ConversationHandler.END
+
+            # Create keyboard with outlet options (max 2 per row)
+            keyboard = []
+            for i in range(0, len(outlet_codes), 2):
+                row = outlet_codes[i:i+2]
+                keyboard.append(row)
+
+            query.message.reply_text(
+                "🔑 Admin Mode: Select outlet for checklist:",
+                reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+            )
+            return CHECKLIST_ADMIN_ASK_OUTLET
+
+        except Exception as e:
+            print(f"Error fetching outlets for admin: {e}")
+            query.message.reply_text("❌ Error loading outlets.", reply_markup=ReplyKeyboardRemove())
+            return ConversationHandler.END
 
     # Fallback
     return ConversationHandler.END
@@ -2890,6 +2917,55 @@ def get_available_time_slots():
         available_slots.append("Closing")
     
     return available_slots
+
+def cl_admin_handle_outlet(update: Update, context):
+    """Handle admin outlet selection"""
+    selected_outlet = update.message.text.strip()
+    print(f"Admin selected outlet: {selected_outlet}")
+
+    # Verify outlet exists
+    try:
+        outlets_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_OUTLETS)
+        outlets_records = outlets_sheet.get_all_records()
+        valid_outlets = [str(row.get("Outlet Code", "")).strip() for row in outlets_records if row.get("Outlet Code")]
+
+        if selected_outlet not in valid_outlets:
+            update.message.reply_text("❌ Invalid outlet selection. Please use /start to try again.", reply_markup=ReplyKeyboardRemove())
+            return ConversationHandler.END
+
+        context.user_data["outlet"] = selected_outlet
+        print(f"Admin outlet set to: {selected_outlet}")
+
+        # Get available time slots
+        available_slots = get_available_time_slots()
+
+        if not available_slots:
+            current_time = datetime.datetime.now(INDIA_TZ).strftime("%H:%M")
+            update.message.reply_text(
+                f"❌ No checklist time slots are currently available.\n"
+                f"Current time: {current_time}\n\n"
+                f"Available times:\n"
+                f"🌅 Morning: 9:00 AM - 1:00 PM\n"
+                f"🌞 Mid Day: 4:00 PM - 7:00 PM\n"
+                f"🌙 Closing: 11:00 PM - 3:00 AM",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
+        # Create keyboard with only available slots
+        keyboard = [available_slots]  # Put all available slots in one row
+
+        current_time = datetime.datetime.now(INDIA_TZ).strftime("%H:%M")
+        update.message.reply_text(
+            f"⏰ Select time slot (Current time: {current_time}):",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return CHECKLIST_ASK_SLOT
+
+    except Exception as e:
+        print(f"Error handling admin outlet selection: {e}")
+        update.message.reply_text("❌ Error processing outlet selection.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
 
 def cl_handle_contact(update: Update, context):
     print("Handling checklist contact verification")
@@ -4214,6 +4290,7 @@ def setup_dispatcher():
             ASK_PHONE: [MessageHandler(Filters.contact, handle_phone)],
             ASK_LOCATION: [MessageHandler(Filters.location, handle_location)],
             CHECKLIST_AOD019_OPTION: [CallbackQueryHandler(aod019_checklist_option_handler)],
+            CHECKLIST_ADMIN_ASK_OUTLET: [MessageHandler(Filters.text & ~Filters.command, cl_admin_handle_outlet)],
             CHECKLIST_ASK_CONTACT: [MessageHandler(Filters.contact, cl_handle_contact)],
             CHECKLIST_ASK_SLOT: [MessageHandler(Filters.text & ~Filters.command, cl_load_questions)],
             CHECKLIST_ASK_QUESTION: [MessageHandler(Filters.text & ~Filters.command, cl_handle_answer)],
