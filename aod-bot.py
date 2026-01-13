@@ -3431,19 +3431,14 @@ def cl_handle_image_upload(update: Update, context):
                             print(f"❌ Temperature {temperature}°C is out of range (3-7°C)")
                             context.user_data["answers"][-1]["answer"] = "error"
                             update.message.reply_text(
-                                f"⚠️ Temperature detected: {temperature}°C\n"
-                                f"This is outside the acceptable range (3-7°C).\n"
-                                f"Answer marked as 'error'."
+                                f"⚠️ Temperature exceeded, please contact Nishat.\n"
+                                f"Detected: {temperature}°C"
                             )
                         else:
                             print(f"✅ Temperature {temperature}°C is within range (3-7°C)")
                             context.user_data["answers"][-1]["answer"] = f"{temperature}°C"
-                            update.message.reply_text(
-                                f"✅ Temperature detected: {temperature}°C (within range)"
-                            )
                     else:
                         print("⚠️ Could not extract temperature from image")
-                        update.message.reply_text("⚠️ Could not read temperature from image")
                 else:
                     print("⚠️ OCR failed to extract text from image")
                     update.message.reply_text("⚠️ Could not read text from image")
