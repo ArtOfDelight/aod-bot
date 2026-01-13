@@ -3127,7 +3127,38 @@ def cl_ask_next_question(update: Update, context):
                 image_hashes_str                                   # Column G: Image Hash(es)
             ])
             print(f"✓ Saved submission summary to ChecklistSubmissions with ID: {context.user_data['submission_id']}")
-            
+
+            # ============================================
+            # STEP 3: Check for temperature errors and notify group
+            # ============================================
+            has_error = False
+            error_questions = []
+            for answer in context.user_data["answers"]:
+                if answer.get("answer") == "error":
+                    has_error = True
+                    error_questions.append(answer["question"])
+
+            if has_error:
+                # Send notification to late sign-in group (same chat ID)
+                try:
+                    error_message = (
+                        f"⚠️ CHECKLIST TEMPERATURE ERROR ⚠️\n\n"
+                        f"📋 Submission ID: {context.user_data['submission_id']}\n"
+                        f"👤 Employee: {context.user_data['emp_name'].replace('_', ' ')}\n"
+                        f"🏢 Outlet: {context.user_data['outlet']}\n"
+                        f"⏰ Slot: {context.user_data['slot']}\n"
+                        f"📅 Date: {context.user_data['date']}\n"
+                        f"🌡️ Temperature out of acceptable range (3-7°C)\n\n"
+                        f"❌ Error in questions:\n"
+                    )
+                    for q in error_questions:
+                        error_message += f"  • {q}\n"
+
+                    bot.send_message(chat_id=-4806089418, text=error_message)
+                    print(f"✓ Sent temperature error notification to group for submission {context.user_data['submission_id']}")
+                except Exception as notif_error:
+                    print(f"Failed to send temperature error notification: {notif_error}")
+
             # Success message with details and ticket option
             keyboard = [[InlineKeyboardButton("🎫 Raise a Ticket", callback_data="goto_ticket")]]
             reply_markup_inline = InlineKeyboardMarkup(keyboard)
