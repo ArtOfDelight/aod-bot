@@ -1353,6 +1353,45 @@ def extract_text_from_image(image_bytes):
         traceback.print_exc()
         return ""
 
+def extract_temperature_from_text(text):
+    """Extract temperature value from OCR text"""
+    try:
+        print(f"\n=== EXTRACTING TEMPERATURE ===")
+        print(f"OCR Text: {text}")
+
+        # Pattern to match temperature values with various formats
+        # Matches: 6.0, 6.0°, 6.0°C, 6.0 °C, 6.0C, etc.
+        temp_pattern = r'(\d+(?:\.\d+)?)\s*(?:°|degrees?)?\s*[Cc]?'
+
+        matches = re.findall(temp_pattern, text)
+
+        if matches:
+            temperatures = []
+            for match in matches:
+                try:
+                    temp = float(match)
+                    # Only consider reasonable temperature values for a chiller (typically -20 to 20°C)
+                    if -20 <= temp <= 20:
+                        temperatures.append(temp)
+                        print(f"Found temperature: {temp}°C")
+                except ValueError:
+                    continue
+
+            if temperatures:
+                # Return the first reasonable temperature found
+                temp = temperatures[0]
+                print(f"✅ Extracted temperature: {temp}°C")
+                return temp
+
+        print("⚠️ No temperature found in text")
+        return None
+
+    except Exception as e:
+        print(f"Error extracting temperature: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
 def extract_amount_from_text(text):
     """Extract monetary amount from text - Smart context-aware extraction"""
     try:
@@ -1875,26 +1914,27 @@ def format_items_for_sheet(items):
 
 def extract_travel_locations_with_ai(image_bytes):
     """
-    Use Google Gemini AI to extract start and end locations from travel receipt
-    Returns: dict with 'start_location' and 'end_location'
+    Use Google Gemini AI to extract start and end locations, and date from travel receipt
+    Returns: dict with 'start_location', 'end_location', and 'date'
     """
     try:
         if not gemini_model:
             print("⚠️ Gemini AI not available for location extraction")
             return None
-        
-        print(f"\n=== AI LOCATION EXTRACTION STARTED ===")
-        
+
+        print(f"\n=== AI LOCATION & DATE EXTRACTION STARTED ===")
+
         image = Image.open(io.BytesIO(image_bytes))
-        
+
         prompt = """
 You are analyzing a travel/transportation receipt (auto, cab, Uber, Ola, Rapido, etc.).
 
-Please extract the pickup and drop locations and return them as a JSON object:
+Please extract the pickup and drop locations, and the trip date, and return them as a JSON object:
 
 {
   "start_location": "<pickup/starting location>",
-  "end_location": "<drop/ending location>"
+  "end_location": "<drop/ending location>",
+  "date": "<trip date in YYYY-MM-DD format>"
 }
 
 Rules:
@@ -1902,48 +1942,53 @@ Rules:
 2. Look for keywords like: drop, to, destination, end
 3. Extract full location names/addresses when available
 4. If exact addresses are present, use them; otherwise use area/landmark names
-5. Return ONLY valid JSON, no additional text
-6. Be concise but complete with location names
+5. For date: Look for the trip date, booking date, or payment date. Convert it to YYYY-MM-DD format (e.g., "2025-01-09")
+6. If the date shows a different year format, correct it (e.g., "09 Jan 26" should be "2026-01-09")
+7. Return ONLY valid JSON, no additional text
+8. Be concise but complete with location names
 
-If you cannot extract the locations, return:
-{"error": "Could not extract locations"}
+If you cannot extract the information, return:
+{"error": "Could not extract travel details"}
 """
-        
+
         response = gemini_model.generate_content([prompt, image])
-        
-        print(f"AI Location Response received")
-        
+
+        print(f"AI Location & Date Response received")
+
         response_text = response.text.strip()
-        
+
         if response_text.startswith("```json"):
             response_text = response_text.replace("```json", "").replace("```", "").strip()
         elif response_text.startswith("```"):
             response_text = response_text.replace("```", "").strip()
-        
+
         result = json.loads(response_text)
-        
+
         if "error" in result:
-            print(f"❌ AI could not extract locations: {result['error']}")
+            print(f"❌ AI could not extract travel details: {result['error']}")
             return None
-        
+
         if "start_location" not in result or "end_location" not in result:
             print("❌ Incomplete location data in AI response")
             return None
-        
-        print(f"✅ AI Location Extraction successful!")
+
+        print(f"✅ AI Extraction successful!")
         print(f"   Start: {result['start_location']}")
         print(f"   End: {result['end_location']}")
-        
+        if "date" in result:
+            print(f"   Date: {result['date']}")
+
         return result
-        
+
     except Exception as e:
-        print(f"❌ Error in AI location extraction: {e}")
+        print(f"❌ Error in AI extraction: {e}")
         return None
 
-def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount):
+def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount, travel_date=None):
     """Save travel allowance (Going/Coming) to Travel Allowance sheet
     - Going and Coming for same trip go in same row
     - Multiple trips create multiple rows
+    - travel_date: Optional date string in YYYY-MM-DD format. If not provided, uses current date.
     """
     try:
         sheet = client.open_by_key(TRAVEL_SHEET_ID).worksheet(TAB_NAME_TRAVEL)
@@ -1956,7 +2001,7 @@ def save_travel_allowance(emp_id, emp_name, outlet, trip_type, amount):
 
         # Get current date and time
         now = datetime.datetime.now(INDIA_TZ)
-        current_date = now.strftime("%Y-%m-%d")
+        current_date = travel_date if travel_date else now.strftime("%Y-%m-%d")
         timestamp = now.strftime("%H%M%S")
 
         # Get all values to check for existing rows
@@ -3273,19 +3318,76 @@ def cl_handle_image_upload(update: Update, context):
         # Store image link and hash in the current answer
         context.user_data["answers"][-1]["image_link"] = image_url
         context.user_data["answers"][-1]["image_hash"] = image_hash
-        
+
+        # ============================================
+        # Temperature validation for chiller images
+        # ============================================
+        current_question = context.user_data["questions"][context.user_data["current_q"]]["question"].lower()
+        if "chiller" in current_question:
+            print("🌡️ Chiller question detected, performing temperature OCR validation")
+            try:
+                # Read image bytes for OCR
+                with open(local_path, "rb") as img_file:
+                    image_bytes = img_file.read()
+
+                # Extract text using Google Vision API
+                ocr_text = extract_text_from_image(image_bytes)
+
+                if ocr_text:
+                    # Extract temperature from OCR text
+                    temperature = extract_temperature_from_text(ocr_text)
+
+                    if temperature is not None:
+                        # Validate temperature range (3°C to 7°C inclusive)
+                        if temperature < 3 or temperature > 7:
+                            print(f"❌ Temperature {temperature}°C is out of range (3-7°C)")
+                            context.user_data["answers"][-1]["answer"] = "error"
+                            update.message.reply_text(
+                                f"⚠️ Temperature detected: {temperature}°C\n"
+                                f"This is outside the acceptable range (3-7°C).\n"
+                                f"Answer marked as 'error'."
+                            )
+                        else:
+                            print(f"✅ Temperature {temperature}°C is within range (3-7°C)")
+                            context.user_data["answers"][-1]["answer"] = f"{temperature}°C"
+                            update.message.reply_text(
+                                f"✅ Temperature detected: {temperature}°C (within range)"
+                            )
+                    else:
+                        print("⚠️ Could not extract temperature from image")
+                        update.message.reply_text("⚠️ Could not read temperature from image")
+                else:
+                    print("⚠️ OCR failed to extract text from image")
+                    update.message.reply_text("⚠️ Could not read text from image")
+
+            except Exception as ocr_error:
+                print(f"Error during temperature OCR: {ocr_error}")
+                import traceback
+                traceback.print_exc()
+                update.message.reply_text("⚠️ Error processing temperature from image")
+
         # ============================================
         # 🔥 REMOVED: Write to ChecklistSubmissions
         # This was creating duplicate rows (one per image)
         # Now we only write to ChecklistSubmissions when ALL questions are complete
         # ============================================
-        
+
         cleanup_file_safely(local_path)
-        
+
+        # Update progress message based on temperature validation result
         try:
-            progress_msg.edit_text("✅ Image uploaded successfully!")
+            if "chiller" in current_question and context.user_data["answers"][-1]["answer"] != "error":
+                # For chiller with valid temperature, the specific message was already sent
+                progress_msg.edit_text("✅ Image uploaded and validated successfully!")
+            elif "chiller" in current_question and context.user_data["answers"][-1]["answer"] == "error":
+                # For chiller with error, the error message was already sent
+                progress_msg.edit_text("✅ Image uploaded (temperature out of range)")
+            else:
+                # For non-chiller images
+                progress_msg.edit_text("✅ Image uploaded successfully!")
         except:
-            update.message.reply_text("✅ Image uploaded successfully!")
+            # Fallback if progress_msg.edit_text fails
+            pass
         
     except Exception as e:
         print(f"Unexpected error in image upload: {e}")
@@ -3956,19 +4058,25 @@ def allowance_handle_image(update: Update, context):
                 )
                 return ALLOWANCE_ASK_IMAGE
             
-            # Extract locations using AI (for display only)
-            processing_msg.edit_text("⏳ Extracting travel locations...")
-            locations = extract_travel_locations_with_ai(bytes(image_bytes))
-            
-            # Save to Travel Allowance sheet (same structure)
+            # Extract locations and date using AI
+            processing_msg.edit_text("⏳ Extracting travel details...")
+            travel_details = extract_travel_locations_with_ai(bytes(image_bytes))
+
+            # Get extracted date if available
+            extracted_date = None
+            if travel_details and "date" in travel_details:
+                extracted_date = travel_details["date"]
+
+            # Save to Travel Allowance sheet
             success = save_travel_allowance(
                 context.user_data["emp_id"],
                 context.user_data["emp_name"],
                 context.user_data["outlet"],
                 trip_type,
-                amount
+                amount,
+                extracted_date
             )
-            
+
             if success:
                 confirmation = [
                     f"✅ Travel allowance recorded successfully!\n",
@@ -3977,21 +4085,25 @@ def allowance_handle_image(update: Update, context):
                     f"🚗 Trip: {trip_type}",
                     f"💰 Amount: ₹{amount:.2f}",
                 ]
-                
+
                 # Show correction notice if amount was corrected by OCR
                 if amount_corrected:
                     confirmation.append(f"⚠️ Amount corrected: Initially read as ₹{original_amount:.2f}, verified as ₹{amount:.2f}")
-                
-                # Add location info if extracted
-                if locations:
+
+                # Add travel details if extracted
+                if travel_details:
                     confirmation.append(f"\n📍 Travel Details:")
-                    confirmation.append(f"   From: {locations['start_location']}")
-                    confirmation.append(f"   To: {locations['end_location']}")
+                    if "date" in travel_details:
+                        confirmation.append(f"   Date: {travel_details['date']}")
+                    confirmation.append(f"   From: {travel_details['start_location']}")
+                    confirmation.append(f"   To: {travel_details['end_location']}")
                 else:
-                    confirmation.append(f"\n📍 Location details could not be extracted")
-                
+                    confirmation.append(f"\n📍 Travel details could not be extracted")
+
+                # Show the date that was actually saved
+                saved_date = extracted_date if extracted_date else datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d')
                 confirmation.extend([
-                    f"\n📅 Date: {datetime.datetime.now(INDIA_TZ).strftime('%Y-%m-%d')}",
+                    f"\n📅 Saved Date: {saved_date}",
                     f"⏰ Time: {datetime.datetime.now(INDIA_TZ).strftime('%H:%M:%S')}",
                     f"\nUse /start to submit another allowance."
                 ])
