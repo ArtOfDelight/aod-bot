@@ -3426,20 +3426,20 @@ def cl_handle_image_upload(update: Update, context):
                     temperature = extract_temperature_from_text(ocr_text)
 
                     if temperature is not None:
-                        # Validate temperature range (3°C to 7°C inclusive)
-                        if temperature < 3 or temperature > 7:
-                            print(f"❌ Temperature {temperature}°C is out of range (3-7°C)")
+                        # Validate temperature - must be exactly 5°C for testing
+                        if temperature != 5.0:
+                            print(f"❌ Temperature {temperature}°C is not exactly 5°C")
                             context.user_data["answers"][-1]["answer"] = "error"
                             update.message.reply_text(
                                 f"⚠️ Temperature detected: {temperature}°C\n"
-                                f"This is outside the acceptable range (3-7°C).\n"
+                                f"Required: Exactly 5.0°C\n"
                                 f"Answer marked as 'error'."
                             )
                         else:
-                            print(f"✅ Temperature {temperature}°C is within range (3-7°C)")
+                            print(f"✅ Temperature {temperature}°C is exactly 5°C")
                             context.user_data["answers"][-1]["answer"] = f"{temperature}°C"
                             update.message.reply_text(
-                                f"✅ Temperature detected: {temperature}°C (within range)"
+                                f"✅ Temperature detected: {temperature}°C (exactly 5°C - valid!)"
                             )
                     else:
                         print("⚠️ Could not extract temperature from image")
