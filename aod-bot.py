@@ -2908,15 +2908,15 @@ def get_available_time_slots():
     
     # Define time ranges for each slot
     morning_start = datetime.time(9, 0)   # 9:00 AM
-    morning_end = datetime.time(15, 0)    # 3:00 PM (extended from 1 PM)
+    morning_end = datetime.time(15, 30)   # 3:30 PM (extended from 1 PM)
 
     midday_start = datetime.time(16, 0)   # 4:00 PM
     midday_end = datetime.time(19, 0)     # 7:00 PM
-    
+
     closing_start = datetime.time(23, 0)  # 11:00 PM
     closing_end = datetime.time(3, 0)     # 3:00 AM (next day)
-    
-    # Check Morning slot (9 AM to 1 PM)
+
+    # Check Morning slot (9 AM to 3:30 PM)
     if morning_start <= current_time <= morning_end:
         available_slots.append("Morning")
     
@@ -2957,7 +2957,7 @@ def cl_admin_handle_outlet(update: Update, context):
                 f"❌ No checklist time slots are currently available.\n"
                 f"Current time: {current_time}\n\n"
                 f"Available times:\n"
-                f"🌅 Morning: 9:00 AM - 1:00 PM\n"
+                f"🌅 Morning: 9:00 AM - 3:30 PM\n"
                 f"🌞 Mid Day: 4:00 PM - 7:00 PM\n"
                 f"🌙 Closing: 11:00 PM - 3:00 AM",
                 reply_markup=ReplyKeyboardRemove()
