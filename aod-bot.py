@@ -1355,36 +1355,48 @@ def extract_text_from_image(image_bytes):
         return ""
 
 def extract_temperature_from_text(text):
-    """Extract temperature value from OCR text"""
+    """
+    Extract temperature value from chiller display OCR text
+    Chiller displays show temperature like "60" which means 6.0°C (last digit is decimal)
+    """
     try:
         print(f"\n=== EXTRACTING TEMPERATURE ===")
         print(f"OCR Text: {text}")
 
-        # Pattern to match temperature values with various formats
-        # Matches: 6.0, 6.0°, 6.0°C, 6.0 °C, 6.0C, etc.
-        temp_pattern = r'(\d+(?:\.\d+)?)\s*(?:°|degrees?)?\s*[Cc]?'
+        # Clean the text - remove any non-digit characters for chiller displays
+        cleaned_text = re.sub(r'[^\d]', '', text.strip())
 
-        matches = re.findall(temp_pattern, text)
+        if not cleaned_text:
+            print("⚠️ No digits found in text")
+            return None
 
-        if matches:
-            temperatures = []
-            for match in matches:
-                try:
-                    temp = float(match)
-                    # Only consider reasonable temperature values for a chiller (typically -20 to 20°C)
-                    if -20 <= temp <= 20:
-                        temperatures.append(temp)
-                        print(f"Found temperature: {temp}°C")
-                except ValueError:
-                    continue
+        print(f"Cleaned digits: {cleaned_text}")
 
-            if temperatures:
-                # Return the first reasonable temperature found
-                temp = temperatures[0]
-                print(f"✅ Extracted temperature: {temp}°C")
+        # Chiller display logic: last digit is always decimal
+        # "60" → 6.0°C, "55" → 5.5°C, "70" → 7.0°C, "35" → 3.5°C
+        if len(cleaned_text) >= 2:
+            # Take all digits and insert decimal before last digit
+            integer_part = cleaned_text[:-1]
+            decimal_part = cleaned_text[-1]
+            temp = float(f"{integer_part}.{decimal_part}")
+            print(f"✅ Extracted temperature: {temp}°C (from display: {cleaned_text})")
+
+            # Sanity check: reasonable chiller temperature range
+            if -20 <= temp <= 20:
+                return temp
+            else:
+                print(f"⚠️ Temperature {temp}°C outside reasonable range")
+                return None
+
+        elif len(cleaned_text) == 1:
+            # Single digit like "6" means 0.6°C or 6.0°C?
+            # Assuming single digit means X.0
+            temp = float(cleaned_text)
+            print(f"✅ Extracted temperature: {temp}°C (single digit)")
+            if -20 <= temp <= 20:
                 return temp
 
-        print("⚠️ No temperature found in text")
+        print("⚠️ Could not parse temperature from text")
         return None
 
     except Exception as e:
