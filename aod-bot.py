@@ -391,7 +391,8 @@ def send_daily_late_signin_summary():
         current_date = now.strftime("%Y-%m-%d")
 
         # Check if we should send the summary (once per day at 9:00 AM)
-        if now.hour != 9 or now.minute != 0:
+        # Allow sending during the first 5 minutes of the 9 AM hour to avoid missing the window
+        if now.hour != 9 or now.minute >= 5:
             return
 
         # Prevent duplicate sends on the same day
