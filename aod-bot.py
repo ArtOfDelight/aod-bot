@@ -87,6 +87,13 @@ ACTIVITY_TRACKER_SHEET_ID = "1lQYE49QXPw4al7rSZMnaMKUytGckYYd85nico-D_weE"
 TAB_NAME_ACTIVITY = "Activity"
 TAB_NAME_ACTIVITY_BACKEND = "Activity Backend"
 
+# Kitchen Checklist Sheet
+KITCHEN_CHECKLIST_SHEET_ID = "1pXGZfQgn6EYjcf-zSZ-saCjmp6y_p0wuu_Y0AAVYCYU"
+TAB_KITCHEN_QUESTIONS = "Questions"
+TAB_KITCHEN_RESPONSES = "Responses"
+TAB_KITCHEN_SUBMISSIONS = "Submissions"
+TAB_KITCHEN_ASSIGNMENTS = "Assignments"
+
 # UPDATED FOLDER IDs - Use the new ones from the shared drive
 DRIVE_FOLDER_ID = "1FJuTky2XPUSNMAC41SOQ-TFKzSq9Wd7i"  # Checklist folder in shared drive
 TICKET_DRIVE_FOLDER_ID = "1frXb-FRKRPPDql4l_VxUJ8r9xgdSfRj-"  # Tickets folder in shared drive
@@ -234,7 +241,12 @@ ALLOWANCE_ASK_CONTACT, ALLOWANCE_ASK_TRIP_TYPE, ALLOWANCE_ASK_IMAGE = range(30, 
 POWER_ASK_CONTACT, POWER_ASK_STATUS = range(40, 42)
 KITCHEN_ASK_CONTACT = 100
 KITCHEN_ASK_ACTION = 101
-KITCHEN_ASK_ACTIVITY = 102 # Added TICKET_ASK_SUBTYPE
+KITCHEN_ASK_ACTIVITY = 102
+
+# Kitchen Checklist states
+KITCHEN_CL_ASK_CONTACT = 110
+KITCHEN_CL_ASK_QUESTION = 111
+KITCHEN_CL_ASK_IMAGE = 112
 
 # === Checklist Reminder Functions ===
 def send_checklist_reminder_to_groups(slot):
@@ -1182,6 +1194,325 @@ def calculate_running_duration(start_time_str):
     except Exception as e:
         print(f"Error calculating running duration: {e}")
         return "0"
+
+
+# ============================================================================
+# KITCHEN CHECKLIST FUNCTIONS
+# ============================================================================
+
+def get_kitchen_checklist_questions(employee_code):
+    """Get questions assigned to an employee from the Kitchen Checklist sheet"""
+    try:
+        sheet = client.open_by_key(KITCHEN_CHECKLIST_SHEET_ID).worksheet(TAB_KITCHEN_QUESTIONS)
+        records = sheet.get_all_records()
+
+        questions = []
+        for row in records:
+            # Check if this question is assigned to the employee
+            assigned_to = str(row.get("Assigned To", "")).strip()
+
+            # Check if employee_code matches (can be comma-separated list)
+            assigned_codes = [code.strip().upper() for code in assigned_to.split(",")]
+            if employee_code.upper() in assigned_codes or "ALL" in assigned_codes:
+                question_text = str(row.get("Question", "")).strip()
+                if question_text:
+                    questions.append({
+                        "question": question_text,
+                        "image_required": str(row.get("Image Required", "")).strip().lower() == "yes",
+                        "answer_type": str(row.get("Answer Type", "Yes/No")).strip()
+                    })
+
+        return questions
+    except Exception as e:
+        print(f"Error getting kitchen checklist questions: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+def kcl_handle_contact(update: Update, context):
+    """Handle contact verification for Kitchen Checklist"""
+    print("Handling kitchen checklist contact verification")
+
+    if not update.message.contact:
+        update.message.reply_text("❌ Please use the button to send your contact.")
+        return KITCHEN_CL_ASK_CONTACT
+
+    phone = normalize_number(update.message.contact.phone_number)
+    emp_name, emp_code = get_employee_info_by_phone(phone)
+
+    if not emp_code:
+        update.message.reply_text(
+            "❌ You're not registered in the system.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+    # Store employee info
+    context.user_data["kcl_emp_name"] = emp_name
+    context.user_data["kcl_emp_code"] = emp_code
+    context.user_data["kcl_submission_id"] = str(uuid.uuid4())[:8]
+    context.user_data["kcl_timestamp"] = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    context.user_data["kcl_date"] = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d")
+
+    # Get questions assigned to this employee
+    questions = get_kitchen_checklist_questions(emp_code)
+
+    if not questions:
+        update.message.reply_text(
+            f"❌ No checklist questions assigned to you ({emp_code}).\n"
+            f"Please contact admin if you believe this is an error.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+    context.user_data["kcl_questions"] = questions
+    context.user_data["kcl_answers"] = []
+    context.user_data["kcl_current_q"] = 0
+
+    update.message.reply_text(
+        f"👋 Welcome {emp_name}!\n\n"
+        f"📋 You have {len(questions)} checklist items to complete.\n"
+        f"Let's begin!",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    return kcl_ask_next_question(update, context)
+
+
+def kcl_ask_next_question(update: Update, context):
+    """Ask the next kitchen checklist question"""
+    idx = context.user_data["kcl_current_q"]
+    questions = context.user_data["kcl_questions"]
+
+    if idx >= len(questions):
+        # All questions completed - save responses
+        return kcl_save_submission(update, context)
+
+    q_data = questions[idx]
+    question_num = idx + 1
+    total_questions = len(questions)
+
+    if q_data["image_required"]:
+        update.message.reply_text(
+            f"📷 Question {question_num}/{total_questions}:\n\n"
+            f"{q_data['question']}\n\n"
+            f"Please upload an image.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return KITCHEN_CL_ASK_IMAGE
+    else:
+        # Determine answer options based on answer_type
+        answer_type = q_data.get("answer_type", "Yes/No")
+        if answer_type == "Temperature":
+            keyboard = [["OK (3-7°C)", "Error (Out of Range)"]]
+        else:
+            keyboard = [["Yes", "No"]]
+
+        update.message.reply_text(
+            f"❓ Question {question_num}/{total_questions}:\n\n"
+            f"{q_data['question']}",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return KITCHEN_CL_ASK_QUESTION
+
+
+def kcl_handle_answer(update: Update, context):
+    """Handle kitchen checklist text answer"""
+    ans = update.message.text.strip()
+    q_data = context.user_data["kcl_questions"][context.user_data["kcl_current_q"]]
+
+    # Validate answer based on type
+    answer_type = q_data.get("answer_type", "Yes/No")
+    valid_answers = ["Yes", "No"] if answer_type != "Temperature" else ["OK (3-7°C)", "Error (Out of Range)"]
+
+    if ans not in valid_answers:
+        update.message.reply_text(f"❌ Please select one of the options: {', '.join(valid_answers)}")
+        return KITCHEN_CL_ASK_QUESTION
+
+    # Store answer
+    context.user_data["kcl_answers"].append({
+        "question": q_data["question"],
+        "answer": ans,
+        "image_link": "",
+        "image_hash": ""
+    })
+
+    context.user_data["kcl_current_q"] += 1
+    return kcl_ask_next_question(update, context)
+
+
+def kcl_handle_image_upload(update: Update, context):
+    """Handle kitchen checklist image upload"""
+    if not update.message.photo:
+        update.message.reply_text("❌ Please upload a photo.")
+        return KITCHEN_CL_ASK_IMAGE
+
+    try:
+        photo = update.message.photo[-1]
+
+        if photo.file_size > 10 * 1024 * 1024:
+            update.message.reply_text("❌ Image too large (max 10MB allowed).")
+            return KITCHEN_CL_ASK_IMAGE
+
+        file = photo.get_file()
+
+        emp_name = context.user_data.get("kcl_emp_name", "User")
+        q_num = context.user_data["kcl_current_q"] + 1
+        current_date = datetime.datetime.now(INDIA_TZ).strftime("%Y-%m-%d")
+        timestamp_suffix = int(time.time())
+
+        safe_emp_name = sanitize_filename(emp_name)
+        filename = f"kitchen_checklist/{safe_emp_name}_Q{q_num}_{current_date}_{timestamp_suffix}.jpg"
+        local_filename = f"kcl_{safe_emp_name}_Q{q_num}_{current_date}_{timestamp_suffix}.jpg"
+        local_path = os.path.join("/tmp", local_filename)
+
+        os.makedirs("/tmp", exist_ok=True)
+        file.download(custom_path=local_path)
+
+        # Compute hash
+        hash_md5 = hashlib.md5()
+        with open(local_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        image_hash = hash_md5.hexdigest()
+
+        # Upload to Google Drive
+        progress_msg = update.message.reply_text("⏳ Uploading image...")
+
+        gfile = drive.CreateFile({
+            'title': filename,
+            'parents': [{'id': DRIVE_FOLDER_ID}],
+            'supportsAllDrives': True
+        })
+        gfile.SetContentFile(local_path)
+        gfile.Upload(param={'supportsAllDrives': True})
+
+        try:
+            gfile.InsertPermission({'type': 'anyone', 'value': 'anyone', 'role': 'reader'})
+        except:
+            pass
+
+        file_id = gfile.get('id')
+        image_url = f"https://drive.google.com/file/d/{file_id}/view"
+
+        # Clean up
+        if os.path.exists(local_path):
+            os.remove(local_path)
+
+        progress_msg.edit_text("✅ Image uploaded!")
+
+        # Store answer with image
+        q_data = context.user_data["kcl_questions"][context.user_data["kcl_current_q"]]
+        context.user_data["kcl_answers"].append({
+            "question": q_data["question"],
+            "answer": "Image uploaded",
+            "image_link": image_url,
+            "image_hash": image_hash
+        })
+
+        context.user_data["kcl_current_q"] += 1
+        return kcl_ask_next_question(update, context)
+
+    except Exception as e:
+        print(f"Error uploading kitchen checklist image: {e}")
+        import traceback
+        traceback.print_exc()
+        update.message.reply_text("❌ Error uploading image. Please try again.")
+        return KITCHEN_CL_ASK_IMAGE
+
+
+def kcl_save_submission(update: Update, context):
+    """Save the completed kitchen checklist submission"""
+    try:
+        # Save individual responses
+        responses_sheet = client.open_by_key(KITCHEN_CHECKLIST_SHEET_ID).worksheet(TAB_KITCHEN_RESPONSES)
+        for answer in context.user_data["kcl_answers"]:
+            responses_sheet.append_row([
+                context.user_data["kcl_submission_id"],
+                context.user_data["kcl_date"],
+                context.user_data["kcl_emp_code"],
+                context.user_data["kcl_emp_name"],
+                answer["question"],
+                answer["answer"],
+                answer.get("image_link", ""),
+                answer.get("image_hash", "")
+            ])
+
+        # Save submission summary
+        submissions_sheet = client.open_by_key(KITCHEN_CHECKLIST_SHEET_ID).worksheet(TAB_KITCHEN_SUBMISSIONS)
+
+        all_image_hashes = [a.get("image_hash", "") for a in context.user_data["kcl_answers"] if a.get("image_hash")]
+        image_hashes_str = ", ".join(all_image_hashes) if all_image_hashes else ""
+
+        submissions_sheet.append_row([
+            context.user_data["kcl_submission_id"],
+            context.user_data["kcl_date"],
+            context.user_data["kcl_emp_code"],
+            context.user_data["kcl_emp_name"],
+            context.user_data["kcl_timestamp"],
+            len(context.user_data["kcl_answers"]),
+            image_hashes_str
+        ])
+
+        # Check for any errors (temperature out of range)
+        has_error = any(a.get("answer") == "Error (Out of Range)" for a in context.user_data["kcl_answers"])
+
+        if has_error:
+            try:
+                error_message = (
+                    f"⚠️ KITCHEN CHECKLIST TEMPERATURE ERROR ⚠️\n\n"
+                    f"📋 Submission ID: {context.user_data['kcl_submission_id']}\n"
+                    f"👤 Employee: {context.user_data['kcl_emp_name']} ({context.user_data['kcl_emp_code']})\n"
+                    f"📅 Date: {context.user_data['kcl_date']}\n"
+                    f"🌡️ Temperature out of acceptable range detected!\n"
+                )
+                bot.send_message(chat_id=-4806089418, text=error_message)
+            except Exception as notif_error:
+                print(f"Failed to send error notification: {notif_error}")
+
+        update.message.reply_text(
+            f"✅ Kitchen Checklist completed!\n\n"
+            f"📋 Submission ID: {context.user_data['kcl_submission_id']}\n"
+            f"👤 Employee: {context.user_data['kcl_emp_name']}\n"
+            f"📅 Date: {context.user_data['kcl_date']}\n"
+            f"✔️ Questions answered: {len(context.user_data['kcl_answers'])}\n"
+            f"📸 Images: {len(all_image_hashes)}\n\n"
+            f"Thank you!",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+        return ConversationHandler.END
+
+    except Exception as e:
+        print(f"Error saving kitchen checklist: {e}")
+        import traceback
+        traceback.print_exc()
+        update.message.reply_text(
+            f"❌ Error saving checklist: {str(e)}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+
+def get_employee_info_by_phone(phone):
+    """Get employee name and code by phone number"""
+    try:
+        emp_sheet = client.open(SHEET_NAME).worksheet(TAB_NAME_EMP_REGISTER)
+        records = emp_sheet.get_all_records()
+
+        for row in records:
+            row_phone = normalize_number(str(row.get("Phone", "")))
+            if row_phone == phone:
+                emp_name = str(row.get("Short Name", "")).strip()
+                emp_code = str(row.get("Employee ID", "")).strip()
+                return emp_name, emp_code
+
+        return None, None
+    except Exception as e:
+        print(f"Error getting employee info by phone: {e}")
+        return None, None
+
 
 # === Sign-In Reminder Functions ===
 def get_employee_chat_id(emp_id, short_name):
@@ -2681,9 +3012,10 @@ def start(update: Update, context):
         [InlineKeyboardButton("📍 Sign In", callback_data="signin"), InlineKeyboardButton("📍 Sign Out", callback_data="signout")],
         [InlineKeyboardButton("✅ Checklist", callback_data="checklist")],
         [InlineKeyboardButton("💰 Travel Allowance", callback_data="allowance")],
-        [InlineKeyboardButton("🎫 Ticket", callback_data="ticket")],
+        # [InlineKeyboardButton("🎫 Ticket", callback_data="ticket")],  # Hidden - backend intact
         [InlineKeyboardButton("⚡ Power Status", callback_data="power_status")],
-        [InlineKeyboardButton("👨‍🍳 Kitchen", callback_data="kitchen")],  # ← ONLY THIS LINE IS NEW
+        [InlineKeyboardButton("👨‍🍳 Kitchen Activity Tracker", callback_data="kitchen")],
+        [InlineKeyboardButton("📋 Kitchen Checklist", callback_data="kitchen_checklist")],
     ]
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2714,9 +3046,12 @@ def action_selected(update: Update, context):
     elif query.data == "power":
         query.message.reply_text("Please verify your phone number for power status:", reply_markup=markup)
         return POWER_ASK_CONTACT
-    elif query.data == "kitchen":  # NEW BLOCK
-        query.message.reply_text("Please verify your phone number for kitchen tracker:", reply_markup=markup)
+    elif query.data == "kitchen":
+        query.message.reply_text("Please verify your phone number for kitchen activity tracker:", reply_markup=markup)
         return KITCHEN_ASK_CONTACT
+    elif query.data == "kitchen_checklist":
+        query.message.reply_text("Please verify your phone number for kitchen checklist:", reply_markup=markup)
+        return KITCHEN_CL_ASK_CONTACT
     query.message.reply_text("Please verify your phone number:", reply_markup=markup)
     return ASK_PHONE
 
@@ -4347,6 +4682,10 @@ def setup_dispatcher():
             KITCHEN_ASK_CONTACT: [MessageHandler(Filters.contact, kitchen_handle_contact)],
             KITCHEN_ASK_ACTION: [MessageHandler(Filters.text & ~Filters.command, kitchen_handle_action)],
             KITCHEN_ASK_ACTIVITY: [MessageHandler(Filters.text & ~Filters.command, kitchen_handle_activity_selection)],
+            # Kitchen Checklist states
+            KITCHEN_CL_ASK_CONTACT: [MessageHandler(Filters.contact, kcl_handle_contact)],
+            KITCHEN_CL_ASK_QUESTION: [MessageHandler(Filters.text & ~Filters.command, kcl_handle_answer)],
+            KITCHEN_CL_ASK_IMAGE: [MessageHandler(Filters.photo, kcl_handle_image_upload)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
