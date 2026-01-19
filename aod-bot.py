@@ -1502,7 +1502,7 @@ def get_employee_info_by_phone(phone):
         records = emp_sheet.get_all_records()
 
         for row in records:
-            row_phone = normalize_number(str(row.get("Phone", "")))
+            row_phone = normalize_number(str(row.get("Phone Number", "")))
             if row_phone == phone:
                 emp_name = str(row.get("Short Name", "")).strip()
                 emp_code = str(row.get("Employee ID", "")).strip()
