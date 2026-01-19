@@ -855,8 +855,8 @@ def kitchen_handle_activity_selection(update: Update, context):
         all_data = sheet.get_all_values()
         
         # Check for active activity
-        headers = all_data[0]
-        
+        headers = [h.strip() for h in all_data[0]]  # Strip whitespace from headers
+
         # Try to find 'Employee Code' column first, fallback to 'Name'
         try:
             emp_code_idx = headers.index('Employee Code')
@@ -985,9 +985,9 @@ def kitchen_stop_activity(update: Update, context):
         
         sheet = client.open_by_key(ACTIVITY_TRACKER_SHEET_ID).worksheet(TAB_NAME_ACTIVITY_BACKEND)
         all_data = sheet.get_all_values()
-        
-        headers = all_data[0]
-        
+
+        headers = [h.strip() for h in all_data[0]]  # Strip whitespace from headers
+
         # Try to find 'Employee Code' column first, fallback to 'Name'
         try:
             emp_code_idx = headers.index('Employee Code')
@@ -995,12 +995,12 @@ def kitchen_stop_activity(update: Update, context):
         except ValueError:
             emp_code_idx = headers.index('Name')
             use_code = False
-        
+
         start_time_idx = headers.index('Start Time')
         end_time_idx = headers.index('End Time')
         activity_idx = headers.index('Activity')
         duration_idx = headers.index('Duration')
-        
+
         # Find active activity (most recent row without end time)
         row_to_update = None
         row_number = None
@@ -1086,12 +1086,12 @@ def get_active_kitchen_activity(employee_code, employee_name):
     try:
         sheet = client.open_by_key(ACTIVITY_TRACKER_SHEET_ID).worksheet(TAB_NAME_ACTIVITY_BACKEND)
         all_data = sheet.get_all_values()
-        
+
         if len(all_data) < 2:
             return None
-        
-        headers = all_data[0]
-        
+
+        headers = [h.strip() for h in all_data[0]]  # Strip whitespace from headers
+
         # Try to find 'Employee Code' column first, fallback to 'Name'
         try:
             emp_code_idx = headers.index('Employee Code')
@@ -1101,7 +1101,7 @@ def get_active_kitchen_activity(employee_code, employee_name):
             emp_code_idx = headers.index('Name')
             use_code = False
             print(f"Using 'Name' column for lookup (Employee Code column not found)")
-        
+
         date_idx = headers.index('Date')
         start_time_idx = headers.index('Start Time')
         end_time_idx = headers.index('End Time')
@@ -2485,7 +2485,7 @@ def get_outlet_row_by_emp_id(emp_id):
                     print("Roster sheet has insufficient data")
                     return None, None, None, None, None
                 
-                headers = all_values[0]
+                headers = [h.strip() for h in all_values[0]]  # Strip whitespace from headers
                 # Find the indices of the columns we need
                 try:
                     emp_id_idx = headers.index("Employee ID")
