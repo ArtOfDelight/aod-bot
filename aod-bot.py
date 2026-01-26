@@ -1344,6 +1344,26 @@ def kcl_handle_answer(update: Update, context):
 
 def kcl_handle_image_upload(update: Update, context):
     """Handle kitchen checklist image upload"""
+    # Handle skip command
+    if update.message.text and update.message.text.strip().lower() == "skip":
+        fail_count = context.user_data.get("kcl_image_fail_count", 0)
+        if fail_count >= 2:
+            # Allow skip after 2 failures
+            q_data = context.user_data["kcl_questions"][context.user_data["kcl_current_q"]]
+            context.user_data["kcl_answers"].append({
+                "question": q_data["question"],
+                "answer": "Image skipped (upload failed)",
+                "image_link": "",
+                "image_hash": ""
+            })
+            context.user_data["kcl_current_q"] += 1
+            context.user_data["kcl_image_fail_count"] = 0
+            update.message.reply_text("⏭️ Image skipped. Moving to next question.", reply_markup=ReplyKeyboardRemove())
+            return kcl_ask_next_question(update, context)
+        else:
+            update.message.reply_text("❌ Please upload a photo. You can only skip after 2 failed attempts.")
+            return KITCHEN_CL_ASK_IMAGE
+
     if not update.message.photo:
         update.message.reply_text("❌ Please upload a photo.")
         return KITCHEN_CL_ASK_IMAGE
@@ -1377,21 +1397,38 @@ def kcl_handle_image_upload(update: Update, context):
                 hash_md5.update(chunk)
         image_hash = hash_md5.hexdigest()
 
-        # Upload to Google Drive
+        # Upload to Google Drive with retry logic
         progress_msg = update.message.reply_text("⏳ Uploading image...")
 
-        gfile = drive.CreateFile({
-            'title': filename,
-            'parents': [{'id': DRIVE_FOLDER_ID}],
-            'supportsAllDrives': True
-        })
-        gfile.SetContentFile(local_path)
-        gfile.Upload(param={'supportsAllDrives': True})
+        max_retries = 3
+        upload_success = False
+        last_error = None
 
-        try:
-            gfile.InsertPermission({'type': 'anyone', 'value': 'anyone', 'role': 'reader'})
-        except:
-            pass
+        for attempt in range(max_retries):
+            try:
+                gfile = drive.CreateFile({
+                    'title': filename,
+                    'parents': [{'id': DRIVE_FOLDER_ID}],
+                    'supportsAllDrives': True
+                })
+                gfile.SetContentFile(local_path)
+                gfile.Upload(param={'supportsAllDrives': True})
+
+                try:
+                    gfile.InsertPermission({'type': 'anyone', 'value': 'anyone', 'role': 'reader'})
+                except:
+                    pass
+
+                upload_success = True
+                break
+            except Exception as upload_error:
+                last_error = upload_error
+                print(f"Upload attempt {attempt + 1} failed: {upload_error}")
+                if attempt < max_retries - 1:
+                    time.sleep(1)  # Wait before retry
+
+        if not upload_success:
+            raise last_error
 
         file_id = gfile.get('id')
         image_url = f"https://drive.google.com/file/d/{file_id}/view"
@@ -1401,6 +1438,9 @@ def kcl_handle_image_upload(update: Update, context):
             os.remove(local_path)
 
         progress_msg.edit_text("✅ Image uploaded!")
+
+        # Reset fail count on success
+        context.user_data["kcl_image_fail_count"] = 0
 
         # Store answer with image
         q_data = context.user_data["kcl_questions"][context.user_data["kcl_current_q"]]
@@ -1418,7 +1458,28 @@ def kcl_handle_image_upload(update: Update, context):
         print(f"Error uploading kitchen checklist image: {e}")
         import traceback
         traceback.print_exc()
-        update.message.reply_text("❌ Error uploading image. Please try again.")
+
+        # Track failure count
+        fail_count = context.user_data.get("kcl_image_fail_count", 0) + 1
+        context.user_data["kcl_image_fail_count"] = fail_count
+
+        # Clean up local file if it exists
+        try:
+            if 'local_path' in locals() and os.path.exists(local_path):
+                os.remove(local_path)
+        except:
+            pass
+
+        if fail_count >= 2:
+            update.message.reply_text(
+                f"❌ Upload failed ({fail_count} attempts).\n\n"
+                f"Type 'skip' to skip this image and continue, or try uploading again."
+            )
+        else:
+            update.message.reply_text(
+                f"❌ Error uploading image. Please try again.\n"
+                f"(Attempt {fail_count}/2 before skip option is available)"
+            )
         return KITCHEN_CL_ASK_IMAGE
 
 
@@ -4685,7 +4746,10 @@ def setup_dispatcher():
             # Kitchen Checklist states
             KITCHEN_CL_ASK_CONTACT: [MessageHandler(Filters.contact, kcl_handle_contact)],
             KITCHEN_CL_ASK_QUESTION: [MessageHandler(Filters.text & ~Filters.command, kcl_handle_answer)],
-            KITCHEN_CL_ASK_IMAGE: [MessageHandler(Filters.photo, kcl_handle_image_upload)],
+            KITCHEN_CL_ASK_IMAGE: [
+                MessageHandler(Filters.photo, kcl_handle_image_upload),
+                MessageHandler(Filters.text & ~Filters.command, kcl_handle_image_upload)
+            ],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
