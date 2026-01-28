@@ -62,7 +62,8 @@ WEBHOOK_URL = "https://aod-bot-t2ux.onrender.com"
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-CREDS_FILE = "service_account.json"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CREDS_FILE = os.path.join(SCRIPT_DIR, "service_account.json")
 SHEET_NAME = "AOD Master App"
 TICKET_SHEET_ID = "1FYXr8Wz0ddN3mFi-0AQbI6J_noi2glPbJLh44CEMUnE"
 ALLOWANCE_SHEET_ID = "1XmKondedSs_c6PZflanfB8OFUsGxVoqi5pUPvscT8cs"
@@ -189,8 +190,15 @@ except Exception as e:
 # === Google Drive Setup ===
 def setup_drive():
     try:
-        gauth = GoogleAuth()
-        gauth.credentials = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
+        # Configure GoogleAuth with service account settings
+        gauth_settings = {
+            "client_config_backend": "service",
+            "service_config": {
+                "client_json_file_path": CREDS_FILE,
+            }
+        }
+        gauth = GoogleAuth(settings=gauth_settings)
+        gauth.ServiceAuth()
         drive = GoogleDrive(gauth)
         # Check or create tickets folder in Shared Drive
         global TICKET_DRIVE_FOLDER_ID
